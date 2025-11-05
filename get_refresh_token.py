@@ -58,7 +58,7 @@ def get_authorization_code():
         'response_type': 'code',
         'client_id': CLIENT_ID,
         'redirect_uri': REDIRECT_URI,
-        'scope': 'payroll.payroll payroll.settings',
+        'scope': 'offline_access accounting.transactions accounting.contacts accounting.settings accounting.journals.read',
         'state': 'security_token_string'
     }
     
