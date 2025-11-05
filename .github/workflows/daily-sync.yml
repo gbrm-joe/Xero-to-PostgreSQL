@@ -1,0 +1,47 @@
+name: Daily Xero Sync
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run Xero sync
+      env:
+        XERO_CLIENT_ID: ${{ secrets.XERO_CLIENT_ID }}
+        XERO_CLIENT_SECRET: ${{ secrets.XERO_CLIENT_SECRET }}
+        XERO_TENANT_ID: ${{ secrets.XERO_TENANT_ID }}
+        XERO_REFRESH_TOKEN: ${{ secrets.XERO_REFRESH_TOKEN }}
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      run: |
+        python xero_sync.py
+    
+    - name: Sync complete
+      if: success()
+      run: echo "Xero sync completed successfully"
+    
+    - name: Sync failed
+      if: failure()
+      run: echo "Xero sync failed - check logs"
