@@ -14,12 +14,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
     
-    - name: Install dependencies
-      run: |
-        python3 -m ensurepip --user || true
-        python3 -m pip install --upgrade pip --user
-        python3 -m pip install -r requirements.txt --user
-    
     - name: Run Xero sync
       env:
         XERO_CLIENT_ID: ${{ secrets.XERO_CLIENT_ID }}
