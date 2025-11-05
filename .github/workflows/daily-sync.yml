@@ -14,15 +14,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
     
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        python3 -m pip install --upgrade pip
+        pip3 install -r requirements.txt
     
     - name: Run Xero sync
       env:
@@ -36,7 +31,7 @@ jobs:
         DB_USER: ${{ secrets.DB_USER }}
         DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       run: |
-        python xero_sync.py
+        python3 xero_sync.py
     
     - name: Sync complete
       if: success()
