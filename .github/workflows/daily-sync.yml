@@ -14,6 +14,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
     
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --user xero-python psycopg2-binary python-dotenv
+    
     - name: Run Xero sync
       env:
         XERO_CLIENT_ID: ${{ secrets.XERO_CLIENT_ID }}
