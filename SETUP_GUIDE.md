@@ -123,7 +123,19 @@ ssh root@YOUR_DROPLET_IP
 
 ### Step 7: Install Dependencies on Droplet
 
-**In the Droplet console/SSH session:**
+**Option A: Using Setup Script (Recommended)**
+
+```bash
+# Download the repository to get scripts
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+cd YOUR_REPO_NAME/scripts
+chmod +x *.sh
+
+# Run installation script
+sudo bash install_droplet_dependencies.sh
+```
+
+**Option B: Manual Installation**
 
 ```bash
 # Update system
@@ -137,6 +149,17 @@ apt install -y postgresql-client
 ```
 
 ### Step 8: Test Database Connection
+
+**Option A: Using Test Script (Recommended)**
+
+```bash
+# In the scripts directory
+bash test_db_connection.sh
+```
+
+The script will prompt you for your database details and test the connection.
+
+**Option B: Manual Testing**
 
 ```bash
 # Replace with YOUR actual connection details from DigitalOcean
@@ -160,7 +183,19 @@ psql "postgresql://USERNAME:PASSWORD@HOST:25060/DATABASE?sslmode=require"
 
 ### Step 10: Install GitHub Runner on Droplet
 
-**In your Droplet console:**
+**Option A: Using Setup Script (Recommended)**
+
+```bash
+# In the scripts directory
+bash install_github_runner.sh
+```
+
+The script will prompt you for:
+- Your GitHub username
+- Your repository name
+- Runner token from GitHub
+
+**Option B: Manual Installation**
 
 ```bash
 # Create a directory for the runner
@@ -190,6 +225,8 @@ sudo ./svc.sh start
 # Check it's running
 sudo ./svc.sh status
 ```
+
+**Note:** The automated script (Option A) is recommended as it handles all steps and error checking automatically. See [scripts/README.md](scripts/README.md) for detailed documentation.
 
 ### Step 11: Verify Runner is Connected
 
