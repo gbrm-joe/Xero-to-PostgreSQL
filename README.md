@@ -28,7 +28,9 @@ Automatically syncs data from Xero to your PostgreSQL database:
 ```
 Xero API (Org 1, 2, 3...)
    ↓
-GitHub Actions (Daily triggers)
+GitHub Repository (code + scheduled workflow)
+   ↓
+Self-Hosted Runner on DO Droplet (fixed IP)
    ↓
 Python Sync Script
    ↓
@@ -38,6 +40,8 @@ DigitalOcean PostgreSQL
    └─ Database 2 (Org 2)
       └─ xero schema
 ```
+
+**Note:** Uses a self-hosted GitHub Actions runner on a DigitalOcean Droplet ($6/month) to provide a fixed IP address for database whitelisting.
 
 ## Files
 
@@ -61,10 +65,11 @@ DigitalOcean PostgreSQL
 2. **Set Up Database Schema**
    - Run `setup_schema.sql` on your DigitalOcean PostgreSQL (creates `xero` schema automatically)
 
-3. **Configure GitHub**
-   - Push code to your repository
+3. **Set Up Self-Hosted Runner**
+   - Create DigitalOcean Droplet ($6/month)
+   - Install GitHub Actions self-hosted runner
+   - Whitelist Droplet IP in PostgreSQL
    - Add secrets to GitHub (see SETUP_GUIDE.md)
-   - GitHub Actions will run daily automatically
 
 4. **Monitor**
    - Check `xero.sync_log` table for sync status
@@ -169,12 +174,12 @@ LIMIT 20;
 
 | Component | Cost |
 |---|---|
-| GitHub Actions | FREE* |
+| DigitalOcean Droplet (Runner) | $6/month |
 | DigitalOcean PostgreSQL | Already budgeted |
 | Xero API | FREE (included) |
-| **Total** | **$0/month** |
+| **Total** | **~$6/month** |
 
-*2,000 free minutes per month. Daily 5-minute syncs = ~150 minutes/month
+**Why the Droplet?** GitHub Actions uses dynamic IPs which can't be whitelisted in DigitalOcean PostgreSQL firewall. The Droplet provides a fixed IP address for secure database access.
 
 ## Performance
 
