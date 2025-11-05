@@ -1,4 +1,4 @@
-# Xero to PostgreSQL Sync
+# Xero to PostgreSQL Syncs
 
 Automated, cost-effective syncing of Xero accounting data to DigitalOcean PostgreSQL using GitHub Actions.
 
