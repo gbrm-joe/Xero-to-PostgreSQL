@@ -315,9 +315,9 @@ class XeroSync:
                     invoice.get('Type'),
                     invoice.get('Status'),
                     invoice.get('LineAmountTypes'),
-                    invoice.get('InvoiceDate'),
-                    invoice.get('DueDate'),
-                    invoice.get('ExpectedPaymentDate'),
+                    self._parse_xero_date(invoice.get('InvoiceDate')),
+                    self._parse_xero_date(invoice.get('DueDate')),
+                    self._parse_xero_date(invoice.get('ExpectedPaymentDate')),
                     invoice.get('Reference'),
                     invoice.get('BrandingThemeID'),
                     float(invoice.get('SubTotal', 0)),
@@ -408,7 +408,7 @@ class XeroSync:
                     journal.get('JournalNumber'),
                     journal.get('Reference'),
                     journal.get('Notes'),
-                    journal.get('JournalDate'),
+                    self._parse_xero_date(journal.get('JournalDate')),
                     journal.get('Status'),
                     self._parse_xero_date(journal.get('UpdatedDateUTC'))
                 ]
