@@ -159,31 +159,16 @@ class XeroSync:
         start_time = datetime.now()
         
         try:
-            # Fetch ALL accounts from Xero with pagination
-            all_accounts = []
-            page = 1
-            page_size = 100
-            max_pages = 200
+            # Fetch accounts from Xero (Accounts endpoint doesn't support paging)
+            logger.info("Fetching accounts...")
+            response = self._make_xero_request('Accounts')
+            accounts = response.get('Accounts', [])
             
-            while page <= max_pages:
-                logger.info(f"Fetching accounts page {page}...")
-                response = self._make_xero_request('Accounts', params={'page': page})
-                accounts = response.get('Accounts', [])
-                
-                if not accounts:
-                    break
-                
-                all_accounts.extend(accounts)
-                logger.info(f"Retrieved {len(accounts)} accounts (total so far: {len(all_accounts)})")
-                
-                page += 1
-                time.sleep(1)  # Delay to avoid rate limiting
-            
-            if not all_accounts:
+            if not accounts:
                 logger.info("No accounts to sync")
                 return 0
             
-            accounts = all_accounts
+            logger.info(f"Retrieved {len(accounts)} accounts")
             
             cursor = self.db_conn.cursor()
             
@@ -246,7 +231,7 @@ class XeroSync:
             
             while page <= max_pages:
                 logger.info(f"Fetching contacts page {page}...")
-                response = self._make_xero_request('Contacts', params={'page': page})
+                response = self._make_xero_request('Contacts', params={'page': page, 'pageSize': 100})
                 contacts = response.get('Contacts', [])
                 
                 if not contacts:
@@ -326,7 +311,7 @@ class XeroSync:
             
             while page <= max_pages:
                 logger.info(f"Fetching invoices page {page}...")
-                response = self._make_xero_request('Invoices', params={'page': page})
+                response = self._make_xero_request('Invoices', params={'page': page, 'pageSize': 100})
                 invoices = response.get('Invoices', [])
                 
                 if not invoices:
@@ -445,7 +430,7 @@ class XeroSync:
             
             while page <= max_pages:
                 logger.info(f"Fetching journals page {page}...")
-                response = self._make_xero_request('Journals', params={'page': page})
+                response = self._make_xero_request('Journals', params={'page': page, 'pageSize': 100})
                 journals = response.get('Journals', [])
                 
                 if not journals:
