@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_contacts_name ON xero.contacts(name);
 CREATE TABLE IF NOT EXISTS xero.invoices (
     id SERIAL PRIMARY KEY,
     invoice_id VARCHAR(36) UNIQUE NOT NULL,
-    invoice_number VARCHAR(255) NOT NULL,
+    invoice_number VARCHAR(255),
     contact_id VARCHAR(36),
     invoice_type VARCHAR(20),
     status VARCHAR(20),

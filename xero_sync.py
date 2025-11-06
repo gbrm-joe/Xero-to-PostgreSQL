@@ -176,15 +176,8 @@ class XeroSync:
                 all_accounts.extend(accounts)
                 logger.info(f"Retrieved {len(accounts)} accounts (total so far: {len(all_accounts)})")
                 
-                # Stop if we got fewer records than expected (last page)
-                if len(accounts) < page_size:
-                    break
-                
                 page += 1
-                
-                # Add small delay to avoid rate limiting
-                if page <= max_pages:
-                    time.sleep(1)
+                time.sleep(1)  # Delay to avoid rate limiting
             
             if not all_accounts:
                 logger.info("No accounts to sync")
@@ -262,15 +255,8 @@ class XeroSync:
                 all_contacts.extend(contacts)
                 logger.info(f"Retrieved {len(contacts)} contacts (total so far: {len(all_contacts)})")
                 
-                # Stop if we got fewer records than expected (last page)
-                if len(contacts) < page_size:
-                    break
-                
                 page += 1
-                
-                # Add small delay to avoid rate limiting
-                if page <= max_pages:
-                    time.sleep(1)
+                time.sleep(1)  # Delay to avoid rate limiting
             
             if not all_contacts:
                 logger.info("No contacts to sync")
@@ -349,15 +335,8 @@ class XeroSync:
                 all_invoices.extend(invoices)
                 logger.info(f"Retrieved {len(invoices)} invoices (total so far: {len(all_invoices)})")
                 
-                # Stop if we got fewer records than expected (last page)
-                if len(invoices) < page_size:
-                    break
-                
                 page += 1
-                
-                # Add small delay to avoid rate limiting
-                if page <= max_pages:
-                    time.sleep(1)
+                time.sleep(1)  # Delay to avoid rate limiting
             
             if not all_invoices:
                 logger.info("No invoices to sync")
@@ -475,15 +454,8 @@ class XeroSync:
                 all_journals.extend(journals)
                 logger.info(f"Retrieved {len(journals)} journals (total so far: {len(all_journals)})")
                 
-                # Stop if we got fewer records than expected (last page)
-                if len(journals) < page_size:
-                    break
-                
                 page += 1
-                
-                # Add small delay to avoid rate limiting
-                if page <= max_pages:
-                    time.sleep(1)
+                time.sleep(1)  # Delay to avoid rate limiting
             
             if not all_journals:
                 logger.info("No journals to sync")
