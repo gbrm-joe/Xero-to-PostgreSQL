@@ -144,13 +144,23 @@ class XeroSync:
         start_time = datetime.now()
         
         try:
-            # Fetch accounts from Xero
-            response = self._make_xero_request('Accounts', params={'where': 'Status=="ACTIVE"'})
-            accounts = response.get('Accounts', [])
+            # Fetch ALL accounts from Xero with pagination
+            all_accounts = []
+            page = 1
+            while True:
+                logger.info(f"Fetching accounts page {page}...")
+                response = self._make_xero_request('Accounts', params={'page': page})
+                accounts = response.get('Accounts', [])
+                if not accounts:
+                    break
+                all_accounts.extend(accounts)
+                page += 1
             
-            if not accounts:
+            if not all_accounts:
                 logger.info("No accounts to sync")
                 return 0
+            
+            accounts = all_accounts
             
             cursor = self.db_conn.cursor()
             
@@ -205,13 +215,23 @@ class XeroSync:
         start_time = datetime.now()
         
         try:
-            # Fetch contacts from Xero
-            response = self._make_xero_request('Contacts', params={'where': 'ContactStatus=="ACTIVE"'})
-            contacts = response.get('Contacts', [])
+            # Fetch ALL contacts from Xero with pagination
+            all_contacts = []
+            page = 1
+            while True:
+                logger.info(f"Fetching contacts page {page}...")
+                response = self._make_xero_request('Contacts', params={'page': page})
+                contacts = response.get('Contacts', [])
+                if not contacts:
+                    break
+                all_contacts.extend(contacts)
+                page += 1
             
-            if not contacts:
+            if not all_contacts:
                 logger.info("No contacts to sync")
                 return 0
+            
+            contacts = all_contacts
             
             cursor = self.db_conn.cursor()
             
@@ -267,14 +287,23 @@ class XeroSync:
         start_time = datetime.now()
         
         try:
-            # Fetch invoices from Xero
-            response = self._make_xero_request('Invoices', 
-                params={'where': 'Status=="AUTHORISED"', 'page': 1})
-            invoices = response.get('Invoices', [])
+            # Fetch ALL invoices from Xero with pagination
+            all_invoices = []
+            page = 1
+            while True:
+                logger.info(f"Fetching invoices page {page}...")
+                response = self._make_xero_request('Invoices', params={'page': page})
+                invoices = response.get('Invoices', [])
+                if not invoices:
+                    break
+                all_invoices.extend(invoices)
+                page += 1
             
-            if not invoices:
+            if not all_invoices:
                 logger.info("No invoices to sync")
                 return 0
+            
+            invoices = all_invoices
             
             cursor = self.db_conn.cursor()
             
@@ -369,14 +398,23 @@ class XeroSync:
         start_time = datetime.now()
         
         try:
-            # Fetch journals from Xero
-            response = self._make_xero_request('ManualJournals',
-                params={'where': 'Status=="POSTED"', 'page': 1})
-            journals = response.get('ManualJournals', [])
+            # Fetch ALL journals from Xero with pagination
+            all_journals = []
+            page = 1
+            while True:
+                logger.info(f"Fetching journals page {page}...")
+                response = self._make_xero_request('Journals', params={'page': page})
+                journals = response.get('Journals', [])
+                if not journals:
+                    break
+                all_journals.extend(journals)
+                page += 1
             
-            if not journals:
+            if not all_journals:
                 logger.info("No journals to sync")
                 return 0
+            
+            journals = all_journals
             
             cursor = self.db_conn.cursor()
             
@@ -404,32 +442,33 @@ class XeroSync:
             for journal in journals:
                 # Insert journal
                 journal_data = [
-                    journal.get('ManualJournalID'),
+                    journal.get('JournalID'),
                     journal.get('JournalNumber'),
                     journal.get('Reference'),
-                    journal.get('Notes'),
+                    None,  # Journals don't have Notes field
                     self._parse_xero_date(journal.get('JournalDate')),
-                    journal.get('Status'),
-                    self._parse_xero_date(journal.get('UpdatedDateUTC'))
+                    None,  # Journals don't have Status field
+                    self._parse_xero_date(journal.get('CreatedDateUTC'))
                 ]
                 
                 cursor.execute(journal_insert, journal_data)
                 journal_count += 1
                 
-                # Insert journal lines (ManualJournals use 'JournalLines' not 'LineItems')
+                # Insert journal lines
                 for line in journal.get('JournalLines', []):
-                    line_id = f"{journal.get('ManualJournalID')}_{line.get('JournalLineID')}"
+                    line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
                     tracking_name = ''
                     tracking_option = ''
                     
-                    if 'TrackingCategories' in line and line['TrackingCategories']:
-                        tracking = line['TrackingCategories'][0]
-                        tracking_name = tracking.get('Name', '')
-                        tracking_option = tracking.get('Option', '')
+                    if 'Tracking' in line and line['Tracking']:
+                        tracking_list = line['Tracking']
+                        if tracking_list:
+                            tracking_name = tracking_list[0].get('Name', '')
+                            tracking_option = tracking_list[0].get('Option', '')
                     
                     line_data = [
                         line_id,
-                        journal.get('ManualJournalID'),
+                        journal.get('JournalID'),
                         line.get('AccountID'),
                         line.get('AccountCode'),
                         line.get('Description'),
