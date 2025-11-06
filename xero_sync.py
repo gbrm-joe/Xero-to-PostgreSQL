@@ -12,6 +12,7 @@ import sys
 import logging
 from datetime import datetime
 import re
+import time
 import psycopg2
 from psycopg2.extras import execute_batch
 import requests
@@ -96,8 +97,8 @@ class XeroSync:
             logger.error(f"Failed to get access token: {str(e)}")
             raise
     
-    def _make_xero_request(self, endpoint, params=None):
-        """Make a request to the Xero API"""
+    def _make_xero_request(self, endpoint, params=None, retry_count=0):
+        """Make a request to the Xero API with rate limit handling"""
         if not self.access_token:
             self.get_access_token()
         
@@ -111,8 +112,22 @@ class XeroSync:
         
         try:
             response = requests.get(url, headers=headers, params=params, timeout=30)
+            
+            # Handle rate limiting
+            if response.status_code == 429:
+                if retry_count < 3:
+                    logger.warning(f"Rate limit hit. Waiting 60 seconds before retry {retry_count + 1}/3...")
+                    time.sleep(60)
+                    return self._make_xero_request(endpoint, params, retry_count + 1)
+                else:
+                    raise Exception("Rate limit exceeded after 3 retries")
+            
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code != 429:  # Don't log 429 twice
+                logger.error(f"Xero API request failed for {endpoint}: {str(e)}")
+            raise
         except Exception as e:
             logger.error(f"Xero API request failed for {endpoint}: {str(e)}")
             raise
@@ -147,14 +162,29 @@ class XeroSync:
             # Fetch ALL accounts from Xero with pagination
             all_accounts = []
             page = 1
-            while True:
+            page_size = 100
+            max_pages = 200
+            
+            while page <= max_pages:
                 logger.info(f"Fetching accounts page {page}...")
                 response = self._make_xero_request('Accounts', params={'page': page})
                 accounts = response.get('Accounts', [])
+                
                 if not accounts:
                     break
+                
                 all_accounts.extend(accounts)
+                logger.info(f"Retrieved {len(accounts)} accounts (total so far: {len(all_accounts)})")
+                
+                # Stop if we got fewer records than expected (last page)
+                if len(accounts) < page_size:
+                    break
+                
                 page += 1
+                
+                # Add small delay to avoid rate limiting
+                if page <= max_pages:
+                    time.sleep(1)
             
             if not all_accounts:
                 logger.info("No accounts to sync")
@@ -218,14 +248,29 @@ class XeroSync:
             # Fetch ALL contacts from Xero with pagination
             all_contacts = []
             page = 1
-            while True:
+            page_size = 100
+            max_pages = 200
+            
+            while page <= max_pages:
                 logger.info(f"Fetching contacts page {page}...")
                 response = self._make_xero_request('Contacts', params={'page': page})
                 contacts = response.get('Contacts', [])
+                
                 if not contacts:
                     break
+                
                 all_contacts.extend(contacts)
+                logger.info(f"Retrieved {len(contacts)} contacts (total so far: {len(all_contacts)})")
+                
+                # Stop if we got fewer records than expected (last page)
+                if len(contacts) < page_size:
+                    break
+                
                 page += 1
+                
+                # Add small delay to avoid rate limiting
+                if page <= max_pages:
+                    time.sleep(1)
             
             if not all_contacts:
                 logger.info("No contacts to sync")
@@ -290,14 +335,29 @@ class XeroSync:
             # Fetch ALL invoices from Xero with pagination
             all_invoices = []
             page = 1
-            while True:
+            page_size = 100
+            max_pages = 2000
+            
+            while page <= max_pages:
                 logger.info(f"Fetching invoices page {page}...")
                 response = self._make_xero_request('Invoices', params={'page': page})
                 invoices = response.get('Invoices', [])
+                
                 if not invoices:
                     break
+                
                 all_invoices.extend(invoices)
+                logger.info(f"Retrieved {len(invoices)} invoices (total so far: {len(all_invoices)})")
+                
+                # Stop if we got fewer records than expected (last page)
+                if len(invoices) < page_size:
+                    break
+                
                 page += 1
+                
+                # Add small delay to avoid rate limiting
+                if page <= max_pages:
+                    time.sleep(1)
             
             if not all_invoices:
                 logger.info("No invoices to sync")
@@ -401,14 +461,29 @@ class XeroSync:
             # Fetch ALL journals from Xero with pagination
             all_journals = []
             page = 1
-            while True:
+            page_size = 100
+            max_pages = 2000
+            
+            while page <= max_pages:
                 logger.info(f"Fetching journals page {page}...")
                 response = self._make_xero_request('Journals', params={'page': page})
                 journals = response.get('Journals', [])
+                
                 if not journals:
                     break
+                
                 all_journals.extend(journals)
+                logger.info(f"Retrieved {len(journals)} journals (total so far: {len(all_journals)})")
+                
+                # Stop if we got fewer records than expected (last page)
+                if len(journals) < page_size:
+                    break
+                
                 page += 1
+                
+                # Add small delay to avoid rate limiting
+                if page <= max_pages:
+                    time.sleep(1)
             
             if not all_journals:
                 logger.info("No journals to sync")
