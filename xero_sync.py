@@ -11,6 +11,7 @@ import json
 import sys
 import logging
 from datetime import datetime
+import re
 import psycopg2
 from psycopg2.extras import execute_batch
 import requests
@@ -47,6 +48,22 @@ class XeroSync:
         
         # Validate configuration
         self._validate_config()
+    
+    def _parse_xero_date(self, date_string):
+        """Parse Xero's /Date(timestamp)/ format to Python datetime"""
+        if not date_string:
+            return None
+        
+        # Match /Date(1690484980033+0000)/
+        match = re.match(r'/Date\((\d+)([+-]\d{4})?\)/', str(date_string))
+        if match:
+            timestamp_ms = int(match.group(1))
+            # Convert milliseconds to seconds
+            timestamp_s = timestamp_ms / 1000
+            return datetime.fromtimestamp(timestamp_s)
+        
+        # If it's already a proper date string, return as-is
+        return date_string
     
     def _validate_config(self):
         """Validate that all required environment variables are set"""
@@ -164,7 +181,7 @@ class XeroSync:
                     account.get('Description'),
                     account.get('EnablePayments', False),
                     account.get('Status'),
-                    account.get('UpdatedDateUTC')
+                    self._parse_xero_date(account.get('UpdatedDateUTC'))
                 ))
             
             # Execute batch insert
@@ -227,7 +244,7 @@ class XeroSync:
                     addresses,
                     contact.get('TaxNumber'),
                     contact.get('ContactStatus'),
-                    contact.get('UpdatedDateUTC')
+                    self._parse_xero_date(contact.get('UpdatedDateUTC'))
                 ))
             
             execute_batch(cursor, insert_query, data, page_size=100)
@@ -307,7 +324,7 @@ class XeroSync:
                     float(invoice.get('TotalTax', 0)),
                     float(invoice.get('Total', 0)),
                     invoice.get('CurrencyCode'),
-                    invoice.get('UpdatedDateUTC')
+                    self._parse_xero_date(invoice.get('UpdatedDateUTC'))
                 ]
                 
                 cursor.execute(invoice_insert, invoice_data)
@@ -393,7 +410,7 @@ class XeroSync:
                     journal.get('Notes'),
                     journal.get('JournalDate'),
                     journal.get('Status'),
-                    journal.get('UpdatedDateUTC')
+                    self._parse_xero_date(journal.get('UpdatedDateUTC'))
                 ]
                 
                 cursor.execute(journal_insert, journal_data)
