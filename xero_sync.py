@@ -416,9 +416,9 @@ class XeroSync:
                 cursor.execute(journal_insert, journal_data)
                 journal_count += 1
                 
-                # Insert journal lines
-                for line in journal.get('LineItems', []):
-                    line_id = f"{journal.get('ManualJournalID')}_{line.get('LineItemID')}"
+                # Insert journal lines (ManualJournals use 'JournalLines' not 'LineItems')
+                for line in journal.get('JournalLines', []):
+                    line_id = f"{journal.get('ManualJournalID')}_{line.get('JournalLineID')}"
                     tracking_name = ''
                     tracking_option = ''
                     
