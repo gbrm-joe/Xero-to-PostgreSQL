@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status ON xero.invoices(status);
 
 CREATE TABLE IF NOT EXISTS xero.invoice_items (
     id SERIAL PRIMARY KEY,
-    invoice_item_id VARCHAR(36) UNIQUE NOT NULL,
+    invoice_item_id VARCHAR(100) UNIQUE NOT NULL,
     invoice_id VARCHAR(36) NOT NULL,
     description TEXT,
     quantity DECIMAL(10, 2),
@@ -90,7 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_journals_date ON xero.journals(journal_date);
 
 CREATE TABLE IF NOT EXISTS xero.journal_lines (
     id SERIAL PRIMARY KEY,
-    journal_line_id VARCHAR(36) UNIQUE NOT NULL,
+    journal_line_id VARCHAR(100) UNIQUE NOT NULL,
     journal_id VARCHAR(36) NOT NULL,
     account_id VARCHAR(36),
     account_code VARCHAR(10),
