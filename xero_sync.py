@@ -10,7 +10,7 @@ import os
 import json
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import time
 import psycopg2
@@ -44,6 +44,7 @@ class XeroSync:
         self.db_password = os.getenv('DB_PASSWORD')
         
         self.access_token = None
+        self.access_token_expires_at = None
         self.db_conn = None
         self.sync_log = {}
         
@@ -76,9 +77,22 @@ class XeroSync:
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
-    def get_access_token(self):
-        """Get a new access token using the refresh token"""
+    def get_access_token(self, force_refresh=False):
+        """Get a new access token using the refresh token
+        
+        Args:
+            force_refresh: If True, always get a new token. If False, use cached token if valid.
+        """
         try:
+            # Check if we have a valid cached token (unless force_refresh is True)
+            if not force_refresh and self.access_token and not self._is_token_expired():
+                logger.debug("Using cached access token")
+                return self.access_token
+            
+            # Load current refresh token from database (it may have been updated)
+            if self.db_conn:
+                self._load_tokens_from_db()
+            
             url = 'https://identity.xero.com/connect/token'
             data = {
                 'grant_type': 'refresh_token',
@@ -90,17 +104,43 @@ class XeroSync:
             response = requests.post(url, data=data, timeout=10)
             response.raise_for_status()
             
-            self.access_token = response.json()['access_token']
-            logger.info("Successfully obtained new access token")
+            token_data = response.json()
+            self.access_token = token_data['access_token']
+            
+            # Xero returns a NEW refresh token each time - we must save it!
+            new_refresh_token = token_data.get('refresh_token')
+            if new_refresh_token:
+                self.refresh_token = new_refresh_token
+                logger.info("Received new refresh token from Xero")
+            
+            # Access tokens expire in 30 minutes (1800 seconds)
+            expires_in = token_data.get('expires_in', 1800)
+            self.access_token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+            
+            # Save tokens to database for persistence
+            if self.db_conn:
+                self._save_tokens_to_db()
+            
+            logger.info(f"Successfully obtained new access token (expires at {self.access_token_expires_at.strftime('%Y-%m-%d %H:%M:%S')})")
+            
             return self.access_token
         except Exception as e:
             logger.error(f"Failed to get access token: {str(e)}")
             raise
     
-    def _make_xero_request(self, endpoint, params=None, retry_count=0):
-        """Make a request to the Xero API with rate limit handling"""
-        if not self.access_token:
-            self.get_access_token()
+    def _make_xero_request(self, endpoint, params=None, retry_count=0, auth_retry=False):
+        """Make a request to the Xero API with rate limit and auth error handling
+        
+        Args:
+            endpoint: The Xero API endpoint to call
+            params: Query parameters
+            retry_count: Current retry count for rate limiting
+            auth_retry: Whether this is a retry after refreshing auth token
+        """
+        # Check if token is expired or about to expire (within 5 minutes)
+        if not self.access_token or self._is_token_expired(buffer_minutes=5):
+            logger.info("Access token expired or expiring soon, refreshing...")
+            self.get_access_token(force_refresh=True)
         
         headers = {
             'Authorization': f'Bearer {self.access_token}',
@@ -118,14 +158,20 @@ class XeroSync:
                 if retry_count < 3:
                     logger.warning(f"Rate limit hit. Waiting 60 seconds before retry {retry_count + 1}/3...")
                     time.sleep(60)
-                    return self._make_xero_request(endpoint, params, retry_count + 1)
+                    return self._make_xero_request(endpoint, params, retry_count + 1, auth_retry)
                 else:
                     raise Exception("Rate limit exceeded after 3 retries")
+            
+            # Handle authorization errors (token expired mid-request)
+            if response.status_code == 401 and not auth_retry:
+                logger.warning("Received 401 Unauthorized - refreshing token and retrying...")
+                self.get_access_token(force_refresh=True)
+                return self._make_xero_request(endpoint, params, retry_count, auth_retry=True)
             
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code != 429:  # Don't log 429 twice
+            if e.response.status_code not in [429, 401]:  # Don't log 429/401 twice
                 logger.error(f"Xero API request failed for {endpoint}: {str(e)}")
             raise
         except Exception as e:
@@ -143,6 +189,9 @@ class XeroSync:
                 password=self.db_password
             )
             logger.info("Successfully connected to PostgreSQL")
+            
+            # Load any existing tokens from database
+            self._load_tokens_from_db()
         except Exception as e:
             logger.error(f"Failed to connect to PostgreSQL: {str(e)}")
             raise
@@ -525,6 +574,72 @@ class XeroSync:
             logger.error(f"Failed to sync journals: {str(e)}")
             self._log_sync('journals', 0, 'failed', str(e), start_time)
             raise
+    
+    def _load_tokens_from_db(self):
+        """Load tokens from database"""
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                SELECT refresh_token, access_token, access_token_expires_at
+                FROM xero.tokens
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """)
+            
+            row = cursor.fetchone()
+            if row and row[0] and row[0] != 'PLACEHOLDER':
+                db_refresh_token, db_access_token, db_expires_at = row
+                
+                # Update refresh token if it's different from what we have
+                if db_refresh_token != self.refresh_token:
+                    logger.info("Loaded updated refresh token from database")
+                    self.refresh_token = db_refresh_token
+                
+                # Load cached access token if still valid
+                if db_access_token and db_expires_at and db_expires_at > datetime.now():
+                    self.access_token = db_access_token
+                    self.access_token_expires_at = db_expires_at
+                    logger.info(f"Loaded cached access token from database (expires at {db_expires_at.strftime('%Y-%m-%d %H:%M:%S')})")
+        except Exception as e:
+            logger.warning(f"Failed to load tokens from database: {str(e)}")
+    
+    def _save_tokens_to_db(self):
+        """Save current tokens to database"""
+        try:
+            cursor = self.db_conn.cursor()
+            
+            # Update or insert the latest tokens
+            cursor.execute("""
+                INSERT INTO xero.tokens (refresh_token, access_token, access_token_expires_at, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    refresh_token = EXCLUDED.refresh_token,
+                    access_token = EXCLUDED.access_token,
+                    access_token_expires_at = EXCLUDED.access_token_expires_at,
+                    updated_at = NOW()
+                WHERE xero.tokens.id = (SELECT MAX(id) FROM xero.tokens)
+            """, (self.refresh_token, self.access_token, self.access_token_expires_at))
+            
+            self.db_conn.commit()
+            logger.info("Saved tokens to database")
+            
+            # Log the new refresh token for updating GitHub Secrets if needed
+            logger.info(f"IMPORTANT: New refresh token (update GitHub Secret if needed): {self.refresh_token[:20]}...")
+        except Exception as e:
+            logger.warning(f"Failed to save tokens to database: {str(e)}")
+    
+    def _is_token_expired(self, buffer_minutes=0):
+        """Check if access token is expired or will expire soon
+        
+        Args:
+            buffer_minutes: Consider token expired if it expires within this many minutes
+        """
+        if not self.access_token_expires_at:
+            return True
+        
+        # Add buffer time to check if token is expiring soon
+        expiry_threshold = datetime.now() + timedelta(minutes=buffer_minutes)
+        return self.access_token_expires_at <= expiry_threshold
     
     def _log_sync(self, sync_type, records_synced, status, error_message, start_time):
         """Log sync operation to database"""
