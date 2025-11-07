@@ -43,6 +43,10 @@ class XeroSync:
         self.db_user = os.getenv('DB_USER')
         self.db_password = os.getenv('DB_PASSWORD')
         
+        # Sync configuration
+        self.batch_size = int(os.getenv('SYNC_BATCH_SIZE', '10'))  # Pages per batch (default: 10 pages = 1000 records)
+        self.force_full_sync = os.getenv('FORCE_FULL_SYNC', 'false').lower() == 'true'
+        
         self.access_token = None
         self.access_token_expires_at = None
         self.db_conn = None
@@ -347,36 +351,36 @@ class XeroSync:
             raise
     
     def sync_invoices(self):
-        """Sync invoices and line items from Xero"""
+        """Sync invoices and line items from Xero with batch commits and incremental sync"""
         logger.info("Starting invoice sync...")
         start_time = datetime.now()
+        sync_type = 'invoices'
         
         try:
-            # Fetch ALL invoices from Xero with pagination
-            all_invoices = []
-            page = 1
-            page_size = 100
+            # Get sync progress
+            progress = self._get_sync_progress(sync_type)
+            start_page = progress['last_page'] + 1 if progress['status'] == 'running' else 1
+            
+            # Determine if we should do incremental sync
+            use_incremental = (
+                not self.force_full_sync and 
+                progress['last_modified'] is not None and
+                progress['status'] == 'completed'
+            )
+            
+            if use_incremental:
+                modified_after = progress['last_modified'].strftime('%Y-%m-%dT%H:%M:%S')
+                logger.info(f"Using incremental sync (changes since {modified_after})")
+            elif start_page > 1:
+                logger.info(f"Resuming from page {start_page} (previous sync was interrupted)")
+            
+            # Mark sync as running
+            self._update_sync_progress(sync_type, page=start_page, status='running')
+            
+            total_synced = 0
+            page = start_page if not use_incremental else 1
             max_pages = 2000
-            
-            while page <= max_pages:
-                logger.info(f"Fetching invoices page {page}...")
-                response = self._make_xero_request('Invoices', params={'page': page, 'pageSize': 100})
-                invoices = response.get('Invoices', [])
-                
-                if not invoices:
-                    break
-                
-                all_invoices.extend(invoices)
-                logger.info(f"Retrieved {len(invoices)} invoices (total so far: {len(all_invoices)})")
-                
-                page += 1
-                time.sleep(1)  # Delay to avoid rate limiting
-            
-            if not all_invoices:
-                logger.info("No invoices to sync")
-                return 0
-            
-            invoices = all_invoices
+            batch_records = []
             
             cursor = self.db_conn.cursor()
             
@@ -405,97 +409,128 @@ class XeroSync:
                     synced_at = NOW()
             """
             
-            invoice_count = 0
-            item_count = 0
-            
-            for invoice in invoices:
-                # Insert invoice
-                invoice_data = [
-                    invoice.get('InvoiceID'),
-                    invoice.get('InvoiceNumber'),
-                    invoice.get('Contact', {}).get('ContactID'),
-                    invoice.get('Type'),
-                    invoice.get('Status'),
-                    invoice.get('LineAmountTypes'),
-                    self._parse_xero_date(invoice.get('InvoiceDate')),
-                    self._parse_xero_date(invoice.get('DueDate')),
-                    self._parse_xero_date(invoice.get('ExpectedPaymentDate')),
-                    invoice.get('Reference'),
-                    invoice.get('BrandingThemeID'),
-                    float(invoice.get('SubTotal', 0)),
-                    float(invoice.get('TotalTax', 0)),
-                    float(invoice.get('Total', 0)),
-                    invoice.get('CurrencyCode'),
-                    self._parse_xero_date(invoice.get('UpdatedDateUTC'))
-                ]
-                
-                cursor.execute(invoice_insert, invoice_data)
-                invoice_count += 1
-                
-                # Insert line items
-                for item in invoice.get('LineItems', []):
-                    item_id = f"{invoice.get('InvoiceID')}_{item.get('LineItemID')}"
-                    
-                    item_data = [
-                        item_id,
-                        invoice.get('InvoiceID'),
-                        item.get('Description'),
-                        float(item.get('Quantity', 0)),
-                        float(item.get('UnitAmount', 0)),
-                        item.get('TaxType'),
-                        float(item.get('TaxAmount', 0)),
-                        float(item.get('LineAmount', 0)),
-                        item.get('AccountCode'),
-                        item.get('AccountID')
-                    ]
-                    
-                    cursor.execute(item_insert, item_data)
-                    item_count += 1
-            
-            self.db_conn.commit()
-            
-            logger.info(f"Successfully synced {invoice_count} invoices with {item_count} line items")
-            self._log_sync('invoices', invoice_count, 'success', None, start_time)
-            
-            return invoice_count
-        
-        except Exception as e:
-            self.db_conn.rollback()
-            logger.error(f"Failed to sync invoices: {str(e)}")
-            self._log_sync('invoices', 0, 'failed', str(e), start_time)
-            raise
-    
-    def sync_journals(self):
-        """Sync journals and journal lines from Xero"""
-        logger.info("Starting journal sync...")
-        start_time = datetime.now()
-        
-        try:
-            # Fetch ALL journals from Xero with pagination
-            all_journals = []
-            page = 1
-            page_size = 100
-            max_pages = 2000
-            
             while page <= max_pages:
-                logger.info(f"Fetching journals page {page}...")
-                response = self._make_xero_request('Journals', params={'page': page, 'pageSize': 100})
-                journals = response.get('Journals', [])
+                logger.info(f"Fetching invoices page {page}...")
                 
-                if not journals:
+                # Build params with ModifiedAfter for incremental sync
+                params = {'page': page, 'pageSize': 100}
+                if use_incremental:
+                    params['where'] = f'UpdatedDateUTC>=DateTime({modified_after})'
+                
+                response = self._make_xero_request('Invoices', params=params)
+                invoices = response.get('Invoices', [])
+                
+                if not invoices:
                     break
                 
-                all_journals.extend(journals)
-                logger.info(f"Retrieved {len(journals)} journals (total so far: {len(all_journals)})")
+                logger.info(f"Retrieved {len(invoices)} invoices")
+                batch_records.extend(invoices)
+                
+                # Process batch when we reach batch_size pages
+                if len(batch_records) >= (self.batch_size * 100) or page == max_pages:
+                    # Process current batch
+                    invoice_count = 0
+                    item_count = 0
+                    
+                    for invoice in batch_records:
+                        # Insert invoice
+                        invoice_data = [
+                            invoice.get('InvoiceID'),
+                            invoice.get('InvoiceNumber'),
+                            invoice.get('Contact', {}).get('ContactID'),
+                            invoice.get('Type'),
+                            invoice.get('Status'),
+                            invoice.get('LineAmountTypes'),
+                            self._parse_xero_date(invoice.get('InvoiceDate')),
+                            self._parse_xero_date(invoice.get('DueDate')),
+                            self._parse_xero_date(invoice.get('ExpectedPaymentDate')),
+                            invoice.get('Reference'),
+                            invoice.get('BrandingThemeID'),
+                            float(invoice.get('SubTotal', 0)),
+                            float(invoice.get('TotalTax', 0)),
+                            float(invoice.get('Total', 0)),
+                            invoice.get('CurrencyCode'),
+                            self._parse_xero_date(invoice.get('UpdatedDateUTC'))
+                        ]
+                        
+                        cursor.execute(invoice_insert, invoice_data)
+                        invoice_count += 1
+                        
+                        # Insert line items
+                        for item in invoice.get('LineItems', []):
+                            item_id = f"{invoice.get('InvoiceID')}_{item.get('LineItemID')}"
+                            
+                            item_data = [
+                                item_id,
+                                invoice.get('InvoiceID'),
+                                item.get('Description'),
+                                float(item.get('Quantity', 0)),
+                                float(item.get('UnitAmount', 0)),
+                                item.get('TaxType'),
+                                float(item.get('TaxAmount', 0)),
+                                float(item.get('LineAmount', 0)),
+                                item.get('AccountCode'),
+                                item.get('AccountID')
+                            ]
+                            
+                            cursor.execute(item_insert, item_data)
+                            item_count += 1
+                    
+                    # COMMIT BATCH
+                    self.db_conn.commit()
+                    total_synced += invoice_count
+                    
+                    logger.info(f"✓ Batch committed: {invoice_count} invoices, {item_count} items (total: {total_synced})")
+                    
+                    # Update progress
+                    self._update_sync_progress(sync_type, page=page, status='running')
+                    
+                    # Clear batch for next iteration
+                    batch_records = []
                 
                 page += 1
                 time.sleep(1)  # Delay to avoid rate limiting
             
-            if not all_journals:
-                logger.info("No journals to sync")
-                return 0
+            # Mark sync as completed
+            sync_timestamp = datetime.now()
+            self._update_sync_progress(sync_type, completed=True, modified_after=sync_timestamp)
             
-            journals = all_journals
+            logger.info(f"Successfully synced {total_synced} invoices")
+            self._log_sync(sync_type, total_synced, 'success', None, start_time)
+            
+            return total_synced
+        
+        except Exception as e:
+            self.db_conn.rollback()
+            self._update_sync_progress(sync_type, status='failed')
+            logger.error(f"Failed to sync invoices: {str(e)}")
+            self._log_sync(sync_type, 0, 'failed', str(e), start_time)
+            raise
+    
+    def sync_journals(self):
+        """Sync journals and journal lines from Xero with batch commits and incremental sync"""
+        logger.info("Starting journal sync...")
+        start_time = datetime.now()
+        sync_type = 'journals'
+        
+        try:
+            # Get sync progress
+            progress = self._get_sync_progress(sync_type)
+            start_page = progress['last_page'] + 1 if progress['status'] == 'running' else 1
+            
+            # Determine if we should do incremental sync
+            # Note: Journals endpoint doesn't support ModifiedAfter, so we always do full sync
+            # but with batch commits for resilience
+            if start_page > 1:
+                logger.info(f"Resuming from page {start_page} (previous sync was interrupted)")
+            
+            # Mark sync as running
+            self._update_sync_progress(sync_type, page=start_page, status='running')
+            
+            total_synced = 0
+            page = start_page
+            max_pages = 2000
+            batch_records = []
             
             cursor = self.db_conn.cursor()
             
@@ -517,62 +552,95 @@ class XeroSync:
                     synced_at = NOW()
             """
             
-            journal_count = 0
-            line_count = 0
-            
-            for journal in journals:
-                # Insert journal
-                journal_data = [
-                    journal.get('JournalID'),
-                    journal.get('JournalNumber'),
-                    journal.get('Reference'),
-                    None,  # Journals don't have Notes field
-                    self._parse_xero_date(journal.get('JournalDate')),
-                    None,  # Journals don't have Status field
-                    self._parse_xero_date(journal.get('CreatedDateUTC'))
-                ]
+            while page <= max_pages:
+                logger.info(f"Fetching journals page {page}...")
                 
-                cursor.execute(journal_insert, journal_data)
-                journal_count += 1
+                response = self._make_xero_request('Journals', params={'page': page, 'pageSize': 100})
+                journals = response.get('Journals', [])
                 
-                # Insert journal lines
-                for line in journal.get('JournalLines', []):
-                    line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
-                    tracking_name = ''
-                    tracking_option = ''
+                if not journals:
+                    break
+                
+                logger.info(f"Retrieved {len(journals)} journals")
+                batch_records.extend(journals)
+                
+                # Process batch when we reach batch_size pages
+                if len(batch_records) >= (self.batch_size * 100) or page == max_pages:
+                    # Process current batch
+                    journal_count = 0
+                    line_count = 0
                     
-                    if 'Tracking' in line and line['Tracking']:
-                        tracking_list = line['Tracking']
-                        if tracking_list:
-                            tracking_name = tracking_list[0].get('Name', '')
-                            tracking_option = tracking_list[0].get('Option', '')
+                    for journal in batch_records:
+                        # Insert journal
+                        journal_data = [
+                            journal.get('JournalID'),
+                            journal.get('JournalNumber'),
+                            journal.get('Reference'),
+                            None,  # Journals don't have Notes field
+                            self._parse_xero_date(journal.get('JournalDate')),
+                            None,  # Journals don't have Status field
+                            self._parse_xero_date(journal.get('CreatedDateUTC'))
+                        ]
+                        
+                        cursor.execute(journal_insert, journal_data)
+                        journal_count += 1
+                        
+                        # Insert journal lines
+                        for line in journal.get('JournalLines', []):
+                            line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
+                            tracking_name = ''
+                            tracking_option = ''
+                            
+                            if 'Tracking' in line and line['Tracking']:
+                                tracking_list = line['Tracking']
+                                if tracking_list:
+                                    tracking_name = tracking_list[0].get('Name', '')
+                                    tracking_option = tracking_list[0].get('Option', '')
+                            
+                            line_data = [
+                                line_id,
+                                journal.get('JournalID'),
+                                line.get('AccountID'),
+                                line.get('AccountCode'),
+                                line.get('Description'),
+                                float(line.get('NetAmount', 0)),
+                                float(line.get('TaxAmount', 0)),
+                                tracking_name,
+                                tracking_option
+                            ]
+                            
+                            cursor.execute(line_insert, line_data)
+                            line_count += 1
                     
-                    line_data = [
-                        line_id,
-                        journal.get('JournalID'),
-                        line.get('AccountID'),
-                        line.get('AccountCode'),
-                        line.get('Description'),
-                        float(line.get('NetAmount', 0)),
-                        float(line.get('TaxAmount', 0)),
-                        tracking_name,
-                        tracking_option
-                    ]
+                    # COMMIT BATCH
+                    self.db_conn.commit()
+                    total_synced += journal_count
                     
-                    cursor.execute(line_insert, line_data)
-                    line_count += 1
+                    logger.info(f"✓ Batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
+                    
+                    # Update progress
+                    self._update_sync_progress(sync_type, page=page, status='running')
+                    
+                    # Clear batch for next iteration
+                    batch_records = []
+                
+                page += 1
+                time.sleep(1)  # Delay to avoid rate limiting
             
-            self.db_conn.commit()
+            # Mark sync as completed
+            sync_timestamp = datetime.now()
+            self._update_sync_progress(sync_type, completed=True, modified_after=sync_timestamp)
             
-            logger.info(f"Successfully synced {journal_count} journals with {line_count} lines")
-            self._log_sync('journals', journal_count, 'success', None, start_time)
+            logger.info(f"Successfully synced {total_synced} journals")
+            self._log_sync(sync_type, total_synced, 'success', None, start_time)
             
-            return journal_count
+            return total_synced
         
         except Exception as e:
             self.db_conn.rollback()
+            self._update_sync_progress(sync_type, status='failed')
             logger.error(f"Failed to sync journals: {str(e)}")
-            self._log_sync('journals', 0, 'failed', str(e), start_time)
+            self._log_sync(sync_type, 0, 'failed', str(e), start_time)
             raise
     
     def _load_tokens_from_db(self):
@@ -640,6 +708,67 @@ class XeroSync:
         # Add buffer time to check if token is expiring soon
         expiry_threshold = datetime.now() + timedelta(minutes=buffer_minutes)
         return self.access_token_expires_at <= expiry_threshold
+    
+    def _get_sync_progress(self, sync_type):
+        """Get sync progress for a specific entity type"""
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                SELECT last_synced_page, last_sync_completed_at, last_modified_after, sync_status
+                FROM xero.sync_progress
+                WHERE sync_type = %s
+            """, (sync_type,))
+            
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'last_page': row[0] or 0,
+                    'last_completed': row[1],
+                    'last_modified': row[2],
+                    'status': row[3]
+                }
+            return {'last_page': 0, 'last_completed': None, 'last_modified': None, 'status': 'idle'}
+        except Exception as e:
+            logger.warning(f"Failed to get sync progress for {sync_type}: {str(e)}")
+            return {'last_page': 0, 'last_completed': None, 'last_modified': None, 'status': 'idle'}
+    
+    def _update_sync_progress(self, sync_type, page=None, status=None, completed=False, modified_after=None):
+        """Update sync progress for a specific entity type"""
+        try:
+            cursor = self.db_conn.cursor()
+            
+            if completed:
+                # Mark sync as completed
+                cursor.execute("""
+                    UPDATE xero.sync_progress
+                    SET last_synced_page = 0,
+                        last_sync_completed_at = NOW(),
+                        last_modified_after = %s,
+                        sync_status = 'completed',
+                        updated_at = NOW()
+                    WHERE sync_type = %s
+                """, (modified_after or datetime.now(), sync_type))
+            elif page is not None:
+                # Update progress mid-sync
+                cursor.execute("""
+                    UPDATE xero.sync_progress
+                    SET last_synced_page = %s,
+                        sync_status = %s,
+                        updated_at = NOW()
+                    WHERE sync_type = %s
+                """, (page, status or 'running', sync_type))
+            elif status:
+                # Update status only
+                cursor.execute("""
+                    UPDATE xero.sync_progress
+                    SET sync_status = %s,
+                        updated_at = NOW()
+                    WHERE sync_type = %s
+                """, (status, sync_type))
+            
+            self.db_conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to update sync progress for {sync_type}: {str(e)}")
     
     def _log_sync(self, sync_type, records_synced, status, error_message, start_time):
         """Log sync operation to database"""
