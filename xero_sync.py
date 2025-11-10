@@ -369,8 +369,10 @@ class XeroSync:
             )
             
             if use_incremental:
-                modified_after = progress['last_modified'].strftime('%Y-%m-%dT%H:%M:%S')
-                logger.info(f"Using incremental sync (changes since {modified_after})")
+                dt = progress['last_modified']
+                # Xero API DateTime format: DateTime(year,month,day,hour,minute,second)
+                modified_after = f"{dt.year},{dt.month:02d},{dt.day:02d},{dt.hour:02d},{dt.minute:02d},{dt.second:02d}"
+                logger.info(f"Using incremental sync (changes since {dt.strftime('%Y-%m-%d %H:%M:%S')})")
             elif start_page > 1:
                 logger.info(f"Resuming from page {start_page} (previous sync was interrupted)")
             
