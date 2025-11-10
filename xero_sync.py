@@ -427,7 +427,7 @@ class XeroSync:
                 batch_records.extend(invoices)
                 
                 # Process batch when we reach batch_size pages
-                if len(batch_records) >= (self.batch_size * 100) or page == max_pages:
+                if len(batch_records) >= (self.batch_size * 100):
                     # Process current batch
                     invoice_count = 0
                     item_count = 0
@@ -490,6 +490,64 @@ class XeroSync:
                 
                 page += 1
                 time.sleep(1)  # Delay to avoid rate limiting
+            
+            # Process any remaining records in final batch
+            if batch_records:
+                invoice_count = 0
+                item_count = 0
+                
+                for invoice in batch_records:
+                    # Insert invoice
+                    invoice_data = [
+                        invoice.get('InvoiceID'),
+                        invoice.get('InvoiceNumber'),
+                        invoice.get('Contact', {}).get('ContactID'),
+                        invoice.get('Type'),
+                        invoice.get('Status'),
+                        invoice.get('LineAmountTypes'),
+                        self._parse_xero_date(invoice.get('InvoiceDate')),
+                        self._parse_xero_date(invoice.get('DueDate')),
+                        self._parse_xero_date(invoice.get('ExpectedPaymentDate')),
+                        invoice.get('Reference'),
+                        invoice.get('BrandingThemeID'),
+                        float(invoice.get('SubTotal', 0)),
+                        float(invoice.get('TotalTax', 0)),
+                        float(invoice.get('Total', 0)),
+                        invoice.get('CurrencyCode'),
+                        self._parse_xero_date(invoice.get('UpdatedDateUTC'))
+                    ]
+                    
+                    cursor.execute(invoice_insert, invoice_data)
+                    invoice_count += 1
+                    
+                    # Insert line items
+                    for item in invoice.get('LineItems', []):
+                        item_id = f"{invoice.get('InvoiceID')}_{item.get('LineItemID')}"
+                        
+                        item_data = [
+                            item_id,
+                            invoice.get('InvoiceID'),
+                            item.get('Description'),
+                            float(item.get('Quantity', 0)),
+                            float(item.get('UnitAmount', 0)),
+                            item.get('TaxType'),
+                            float(item.get('TaxAmount', 0)),
+                            float(item.get('LineAmount', 0)),
+                            item.get('AccountCode'),
+                            item.get('AccountID')
+                        ]
+                        
+                        cursor.execute(item_insert, item_data)
+                        item_count += 1
+                
+                # COMMIT FINAL BATCH
+                self.db_conn.commit()
+                total_synced += invoice_count
+                
+                logger.info(f"✓ Final batch committed: {invoice_count} invoices, {item_count} items (total: {total_synced})")
+                
+                # Update progress with last page processed
+                self._update_sync_progress(sync_type, page=page-1, status='running')
             
             # Mark sync as completed
             sync_timestamp = datetime.now()
@@ -565,7 +623,7 @@ class XeroSync:
                 batch_records.extend(journals)
                 
                 # Process batch when we reach batch_size pages
-                if len(batch_records) >= (self.batch_size * 100) or page == max_pages:
+                if len(batch_records) >= (self.batch_size * 100):
                     # Process current batch
                     journal_count = 0
                     line_count = 0
@@ -626,6 +684,62 @@ class XeroSync:
                 
                 page += 1
                 time.sleep(1)  # Delay to avoid rate limiting
+            
+            # Process any remaining records in final batch
+            if batch_records:
+                journal_count = 0
+                line_count = 0
+                
+                for journal in batch_records:
+                    # Insert journal
+                    journal_data = [
+                        journal.get('JournalID'),
+                        journal.get('JournalNumber'),
+                        journal.get('Reference'),
+                        None,
+                        self._parse_xero_date(journal.get('JournalDate')),
+                        None,
+                        self._parse_xero_date(journal.get('CreatedDateUTC'))
+                    ]
+                    
+                    cursor.execute(journal_insert, journal_data)
+                    journal_count += 1
+                    
+                    # Insert journal lines
+                    for line in journal.get('JournalLines', []):
+                        line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
+                        tracking_name = ''
+                        tracking_option = ''
+                        
+                        if 'Tracking' in line and line['Tracking']:
+                            tracking_list = line['Tracking']
+                            if tracking_list:
+                                tracking_name = tracking_list[0].get('Name', '')
+                                tracking_option = tracking_list[0].get('Option', '')
+                        
+                        line_data = [
+                            line_id,
+                            journal.get('JournalID'),
+                            line.get('AccountID'),
+                            line.get('AccountCode'),
+                            line.get('Description'),
+                            float(line.get('NetAmount', 0)),
+                            float(line.get('TaxAmount', 0)),
+                            tracking_name,
+                            tracking_option
+                        ]
+                        
+                        cursor.execute(line_insert, line_data)
+                        line_count += 1
+                
+                # COMMIT FINAL BATCH
+                self.db_conn.commit()
+                total_synced += journal_count
+                
+                logger.info(f"✓ Final batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
+                
+                # Update progress with last page processed
+                self._update_sync_progress(sync_type, page=page-1, status='running')
             
             # Mark sync as completed
             sync_timestamp = datetime.now()
