@@ -669,8 +669,8 @@ class XeroSync:
                             line_data_batch.append(line_data)
                     
                     # Execute batch inserts
-                    execute_batch(cursor, journal_insert, journal_data_batch, page_size=100)
-                    execute_batch(cursor, line_insert, line_data_batch, page_size=100)
+                    execute_batch(cursor, journal_insert, journal_data_batch)
+                    execute_batch(cursor, line_insert, line_data_batch)
                     
                     # COMMIT BATCH
                     self.db_conn.commit()
@@ -731,8 +731,8 @@ class XeroSync:
                         line_data_batch.append(line_data)
                 
                 # Execute batch inserts
-                execute_batch(cursor, journal_insert, journal_data_batch, page_size=100)
-                execute_batch(cursor, line_insert, line_data_batch, page_size=100)
+                execute_batch(cursor, journal_insert, journal_data_batch)
+                execute_batch(cursor, line_insert, line_data_batch)
                 
                 # COMMIT FINAL BATCH
                 self.db_conn.commit()
