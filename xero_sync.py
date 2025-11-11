@@ -568,29 +568,32 @@ class XeroSync:
             raise
     
     def sync_journals(self):
-        """Sync journals and journal lines from Xero with batch commits and incremental sync"""
+        """Sync journals and journal lines from Xero using offset-based pagination"""
         logger.info("Starting journal sync...")
         start_time = datetime.now()
         sync_type = 'journals'
         
         try:
-            # Get sync progress
-            progress = self._get_sync_progress(sync_type)
-            start_page = progress['last_page'] + 1 if progress['status'] == 'running' else 1
+            # Get the highest journal number in our database
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT MAX(journal_number) FROM xero.journals")
+            result = cursor.fetchone()
+            last_journal_number = result[0] if result[0] else 0
+            cursor.close()
             
-            # Determine if we should do incremental sync
-            # Note: Journals endpoint doesn't support ModifiedAfter, so we always do full sync
-            # but with batch commits for resilience
-            if start_page > 1:
-                logger.info(f"Resuming from page {start_page} (previous sync was interrupted)")
+            if last_journal_number > 0:
+                logger.info(f"Resuming from journal number {last_journal_number}")
+            else:
+                logger.info("Starting fresh journal sync from the beginning")
             
             # Mark sync as running
-            self._update_sync_progress(sync_type, page=start_page, status='running')
+            self._update_sync_progress(sync_type, page=0, status='running')
             
             total_synced = 0
-            page = start_page
-            max_pages = 2000
+            current_offset = last_journal_number
             batch_records = []
+            consecutive_empty_responses = 0
+            max_empty_responses = 3  # Stop after 3 consecutive empty responses
             
             # Don't create cursor here - will create fresh cursor for each batch
             
@@ -612,25 +615,36 @@ class XeroSync:
                     synced_at = NOW()
             """
             
-            while page <= max_pages:
-                logger.info(f"Fetching journals page {page}...")
+            while True:
+                logger.info(f"Fetching journals with offset {current_offset}...")
                 
-                response = self._make_xero_request('Journals', params={'page': page, 'pageSize': 100})
+                # Use offset parameter as per Xero API documentation
+                response = self._make_xero_request('Journals', params={'offset': current_offset})
                 journals = response.get('Journals', [])
                 
                 if not journals:
-                    break
+                    consecutive_empty_responses += 1
+                    logger.info(f"No journals returned (empty response {consecutive_empty_responses}/{max_empty_responses})")
+                    if consecutive_empty_responses >= max_empty_responses:
+                        logger.info("Reached end of journals after multiple empty responses")
+                        break
+                    # Try incrementing offset by 100 in case there's a gap
+                    current_offset += 100
+                    time.sleep(1)
+                    continue
                 
+                consecutive_empty_responses = 0  # Reset counter on successful response
                 logger.info(f"Retrieved {len(journals)} journals")
                 
-                # DIAGNOSTIC: Log sample journal from page 401+
-                if page >= 401 and journals:
-                    sample = journals[0]
-                    logger.info(f"DIAGNOSTIC - Sample journal from page {page}:")
-                    logger.info(f"  JournalID: {sample.get('JournalID')}")
-                    logger.info(f"  JournalNumber: {sample.get('JournalNumber')}")
-                    logger.info(f"  JournalDate: {sample.get('JournalDate')}")
-                    logger.info(f"  Full structure keys: {list(sample.keys())}")
+                # Log the journal number range
+                if journals:
+                    first_num = journals[0].get('JournalNumber')
+                    last_num = journals[-1].get('JournalNumber')
+                    logger.info(f"Journal number range: {first_num} to {last_num}")
+                    
+                    # Update current_offset to the last journal number for next iteration
+                    if last_num:
+                        current_offset = last_num
                 
                 batch_records.extend(journals)
                 
@@ -700,11 +714,11 @@ class XeroSync:
                             cursor.execute(line_insert, line_data)
                             line_count += 1
                     
-                    # DIAGNOSTIC: Log journal number range for this batch
+                    # Log journal number range for this batch
                     if batch_records:
                         first_num = batch_records[0].get('JournalNumber', 'NULL')
                         last_num = batch_records[-1].get('JournalNumber', 'NULL')
-                        logger.info(f"DIAGNOSTIC - Batch journal number range: {first_num} to {last_num}")
+                        logger.info(f"Processing batch with journal numbers: {first_num} to {last_num}")
                     
                     # COMMIT BATCH
                     logger.info(f"About to commit batch: {journal_count} journals, {line_count} lines...")
@@ -738,13 +752,9 @@ class XeroSync:
                     
                     logger.info(f"✓ Batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
                     
-                    # Update progress
-                    self._update_sync_progress(sync_type, page=page, status='running')
-                    
                     # Clear batch for next iteration
                     batch_records = []
                 
-                page += 1
                 time.sleep(1)  # Delay to avoid rate limiting
             
             # Process any remaining records in final batch
@@ -819,12 +829,19 @@ class XeroSync:
                 
                 logger.info(f"✓ Final batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
                 
-                # Update progress with last page processed
-                self._update_sync_progress(sync_type, page=page-1, status='running')
+                # Update progress
+                logger.info(f"Processing final batch of {journal_count} journals")
             
             # Mark sync as completed
             sync_timestamp = datetime.now()
             self._update_sync_progress(sync_type, completed=True, modified_after=sync_timestamp)
+            
+            # Log final journal count
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT COUNT(*), MAX(journal_number) FROM xero.journals")
+            total_count, max_number = cursor.fetchone()
+            cursor.close()
+            logger.info(f"Journal sync complete. Total in DB: {total_count}, Max journal number: {max_number}")
             
             logger.info(f"Successfully synced {total_synced} journals")
             self._log_sync(sync_type, total_synced, 'success', None, start_time)
