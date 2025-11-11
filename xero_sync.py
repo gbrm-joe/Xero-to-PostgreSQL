@@ -673,7 +673,28 @@ class XeroSync:
                             line_count += 1
                     
                     # COMMIT BATCH
-                    self.db_conn.commit()
+                    logger.info(f"About to commit batch: {journal_count} journals, {line_count} lines...")
+                    
+                    # Check DB state before commit
+                    cursor.execute("SELECT COUNT(*) FROM xero.journals")
+                    count_before = cursor.fetchone()[0]
+                    logger.info(f"Journals in DB before commit: {count_before}")
+                    
+                    try:
+                        self.db_conn.commit()
+                        logger.info("Commit executed successfully")
+                    except Exception as e:
+                        logger.error(f"Commit failed: {str(e)}")
+                        raise
+                    
+                    # Verify commit worked
+                    cursor.execute("SELECT COUNT(*) FROM xero.journals")
+                    count_after = cursor.fetchone()[0]
+                    logger.info(f"Journals in DB after commit: {count_after} (expected: {count_before + journal_count})")
+                    
+                    if count_after != count_before + journal_count:
+                        logger.error(f"COMMIT VERIFICATION FAILED! Expected {count_before + journal_count}, got {count_after}")
+                    
                     total_synced += journal_count
                     
                     logger.info(f"✓ Batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
