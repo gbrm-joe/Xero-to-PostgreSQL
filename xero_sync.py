@@ -592,7 +592,7 @@ class XeroSync:
             max_pages = 2000
             batch_records = []
             
-            cursor = self.db_conn.cursor()
+            # Don't create cursor here - will create fresh cursor for each batch
             
             journal_insert = """
                 INSERT INTO xero.journals
@@ -626,6 +626,9 @@ class XeroSync:
                 
                 # Process batch when we reach batch_size pages
                 if len(batch_records) >= (self.batch_size * 100):
+                    # Create fresh cursor for this batch
+                    cursor = self.db_conn.cursor()
+                    
                     # Process current batch
                     journal_count = 0
                     line_count = 0
@@ -687,10 +690,15 @@ class XeroSync:
                         logger.error(f"Commit failed: {str(e)}")
                         raise
                     
-                    # Verify commit worked
+                    # Close cursor after commit - critical for avoiding cursor state issues
+                    cursor.close()
+                    
+                    # Create new cursor to verify commit
+                    cursor = self.db_conn.cursor()
                     cursor.execute("SELECT COUNT(*) FROM xero.journals")
                     count_after = cursor.fetchone()[0]
                     logger.info(f"Journals in DB after commit: {count_after} (expected: {count_before + journal_count})")
+                    cursor.close()
                     
                     if count_after != count_before + journal_count:
                         logger.error(f"COMMIT VERIFICATION FAILED! Expected {count_before + journal_count}, got {count_after}")
@@ -710,6 +718,9 @@ class XeroSync:
             
             # Process any remaining records in final batch
             if batch_records:
+                # Create fresh cursor for final batch
+                cursor = self.db_conn.cursor()
+                
                 journal_count = 0
                 line_count = 0
                 
@@ -757,6 +768,7 @@ class XeroSync:
                 
                 # COMMIT FINAL BATCH
                 self.db_conn.commit()
+                cursor.close()  # Close cursor after final commit
                 total_synced += journal_count
                 
                 logger.info(f"✓ Final batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
