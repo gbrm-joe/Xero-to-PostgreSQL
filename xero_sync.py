@@ -627,12 +627,12 @@ class XeroSync:
                 # Process batch when we reach batch_size pages
                 if len(batch_records) >= (self.batch_size * 100):
                     # Process current batch
-                    journal_data_batch = []
-                    line_data_batch = []
+                    journal_count = 0
+                    line_count = 0
                     
                     for journal in batch_records:
-                        # Prepare journal data
-                        journal_data = (
+                        # Insert journal
+                        journal_data = [
                             journal.get('JournalID'),
                             journal.get('JournalNumber'),
                             journal.get('Reference'),
@@ -640,10 +640,12 @@ class XeroSync:
                             self._parse_xero_date(journal.get('JournalDate')),
                             None,  # Journals don't have Status field
                             self._parse_xero_date(journal.get('CreatedDateUTC'))
-                        )
-                        journal_data_batch.append(journal_data)
+                        ]
                         
-                        # Prepare journal lines data
+                        cursor.execute(journal_insert, journal_data)
+                        journal_count += 1
+                        
+                        # Insert journal lines
                         for line in journal.get('JournalLines', []):
                             line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
                             tracking_name = ''
@@ -655,7 +657,7 @@ class XeroSync:
                                     tracking_name = tracking_list[0].get('Name', '')
                                     tracking_option = tracking_list[0].get('Option', '')
                             
-                            line_data = (
+                            line_data = [
                                 line_id,
                                 journal.get('JournalID'),
                                 line.get('AccountID'),
@@ -665,18 +667,16 @@ class XeroSync:
                                 float(line.get('TaxAmount', 0)),
                                 tracking_name,
                                 tracking_option
-                            )
-                            line_data_batch.append(line_data)
-                    
-                    # Execute batch inserts
-                    execute_batch(cursor, journal_insert, journal_data_batch)
-                    execute_batch(cursor, line_insert, line_data_batch)
+                            ]
+                            
+                            cursor.execute(line_insert, line_data)
+                            line_count += 1
                     
                     # COMMIT BATCH
                     self.db_conn.commit()
-                    total_synced += len(journal_data_batch)
+                    total_synced += journal_count
                     
-                    logger.info(f"✓ Batch committed: {len(journal_data_batch)} journals, {len(line_data_batch)} lines (total: {total_synced})")
+                    logger.info(f"✓ Batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
                     
                     # Update progress
                     self._update_sync_progress(sync_type, page=page, status='running')
@@ -689,12 +689,12 @@ class XeroSync:
             
             # Process any remaining records in final batch
             if batch_records:
-                journal_data_batch = []
-                line_data_batch = []
+                journal_count = 0
+                line_count = 0
                 
                 for journal in batch_records:
-                    # Prepare journal data
-                    journal_data = (
+                    # Insert journal
+                    journal_data = [
                         journal.get('JournalID'),
                         journal.get('JournalNumber'),
                         journal.get('Reference'),
@@ -702,10 +702,12 @@ class XeroSync:
                         self._parse_xero_date(journal.get('JournalDate')),
                         None,
                         self._parse_xero_date(journal.get('CreatedDateUTC'))
-                    )
-                    journal_data_batch.append(journal_data)
+                    ]
                     
-                    # Prepare journal lines data
+                    cursor.execute(journal_insert, journal_data)
+                    journal_count += 1
+                    
+                    # Insert journal lines
                     for line in journal.get('JournalLines', []):
                         line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
                         tracking_name = ''
@@ -717,7 +719,7 @@ class XeroSync:
                                 tracking_name = tracking_list[0].get('Name', '')
                                 tracking_option = tracking_list[0].get('Option', '')
                         
-                        line_data = (
+                        line_data = [
                             line_id,
                             journal.get('JournalID'),
                             line.get('AccountID'),
@@ -727,18 +729,16 @@ class XeroSync:
                             float(line.get('TaxAmount', 0)),
                             tracking_name,
                             tracking_option
-                        )
-                        line_data_batch.append(line_data)
-                
-                # Execute batch inserts
-                execute_batch(cursor, journal_insert, journal_data_batch)
-                execute_batch(cursor, line_insert, line_data_batch)
+                        ]
+                        
+                        cursor.execute(line_insert, line_data)
+                        line_count += 1
                 
                 # COMMIT FINAL BATCH
                 self.db_conn.commit()
-                total_synced += len(journal_data_batch)
+                total_synced += journal_count
                 
-                logger.info(f"✓ Final batch committed: {len(journal_data_batch)} journals, {len(line_data_batch)} lines (total: {total_synced})")
+                logger.info(f"✓ Final batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
                 
                 # Update progress with last page processed
                 self._update_sync_progress(sync_type, page=page-1, status='running')
