@@ -622,6 +622,16 @@ class XeroSync:
                     break
                 
                 logger.info(f"Retrieved {len(journals)} journals")
+                
+                # DIAGNOSTIC: Log sample journal from page 401+
+                if page >= 401 and journals:
+                    sample = journals[0]
+                    logger.info(f"DIAGNOSTIC - Sample journal from page {page}:")
+                    logger.info(f"  JournalID: {sample.get('JournalID')}")
+                    logger.info(f"  JournalNumber: {sample.get('JournalNumber')}")
+                    logger.info(f"  JournalDate: {sample.get('JournalDate')}")
+                    logger.info(f"  Full structure keys: {list(sample.keys())}")
+                
                 batch_records.extend(journals)
                 
                 # Process batch when we reach batch_size pages
@@ -635,9 +645,17 @@ class XeroSync:
                     
                     for journal in batch_records:
                         # Insert journal
+                        journal_id = journal.get('JournalID')
+                        journal_number = journal.get('JournalNumber')
+                        
+                        # DIAGNOSTIC: Log if journal_id is NULL or empty
+                        if not journal_id:
+                            logger.error(f"WARNING: NULL/empty JournalID for journal number {journal_number}")
+                            logger.error(f"  Full journal object: {journal}")
+                        
                         journal_data = [
-                            journal.get('JournalID'),
-                            journal.get('JournalNumber'),
+                            journal_id,
+                            journal_number,
                             journal.get('Reference'),
                             None,  # Journals don't have Notes field
                             self._parse_xero_date(journal.get('JournalDate')),
@@ -645,8 +663,15 @@ class XeroSync:
                             self._parse_xero_date(journal.get('CreatedDateUTC'))
                         ]
                         
-                        cursor.execute(journal_insert, journal_data)
-                        journal_count += 1
+                        try:
+                            cursor.execute(journal_insert, journal_data)
+                            journal_count += 1
+                        except Exception as e:
+                            logger.error(f"Failed to insert journal {journal_number}: {str(e)}")
+                            logger.error(f"  JournalID: {journal_id}")
+                            logger.error(f"  Journal data: {journal_data}")
+                            # Continue with next journal rather than failing entire batch
+                            continue
                         
                         # Insert journal lines
                         for line in journal.get('JournalLines', []):
@@ -674,6 +699,12 @@ class XeroSync:
                             
                             cursor.execute(line_insert, line_data)
                             line_count += 1
+                    
+                    # DIAGNOSTIC: Log journal number range for this batch
+                    if batch_records:
+                        first_num = batch_records[0].get('JournalNumber', 'NULL')
+                        last_num = batch_records[-1].get('JournalNumber', 'NULL')
+                        logger.info(f"DIAGNOSTIC - Batch journal number range: {first_num} to {last_num}")
                     
                     # COMMIT BATCH
                     logger.info(f"About to commit batch: {journal_count} journals, {line_count} lines...")
@@ -726,9 +757,17 @@ class XeroSync:
                 
                 for journal in batch_records:
                     # Insert journal
+                    journal_id = journal.get('JournalID')
+                    journal_number = journal.get('JournalNumber')
+                    
+                    # DIAGNOSTIC: Log if journal_id is NULL or empty
+                    if not journal_id:
+                        logger.error(f"WARNING: NULL/empty JournalID for journal number {journal_number}")
+                        logger.error(f"  Full journal object: {journal}")
+                    
                     journal_data = [
-                        journal.get('JournalID'),
-                        journal.get('JournalNumber'),
+                        journal_id,
+                        journal_number,
                         journal.get('Reference'),
                         None,
                         self._parse_xero_date(journal.get('JournalDate')),
@@ -736,8 +775,15 @@ class XeroSync:
                         self._parse_xero_date(journal.get('CreatedDateUTC'))
                     ]
                     
-                    cursor.execute(journal_insert, journal_data)
-                    journal_count += 1
+                    try:
+                        cursor.execute(journal_insert, journal_data)
+                        journal_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to insert journal {journal_number}: {str(e)}")
+                        logger.error(f"  JournalID: {journal_id}")
+                        logger.error(f"  Journal data: {journal_data}")
+                        # Continue with next journal rather than failing entire batch
+                        continue
                     
                     # Insert journal lines
                     for line in journal.get('JournalLines', []):
