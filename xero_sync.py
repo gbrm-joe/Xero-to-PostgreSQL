@@ -443,7 +443,7 @@ class XeroSync:
                             invoice.get('Type'),
                             invoice.get('Status'),
                             invoice.get('LineAmountTypes'),
-                            self._parse_xero_date(invoice.get('InvoiceDate')),
+                            self._parse_xero_date(invoice.get('Date')),  # Fixed: Date not InvoiceDate
                             self._parse_xero_date(invoice.get('DueDate')),
                             self._parse_xero_date(invoice.get('ExpectedPaymentDate')),
                             invoice.get('Reference'),
@@ -507,7 +507,7 @@ class XeroSync:
                         invoice.get('Type'),
                         invoice.get('Status'),
                         invoice.get('LineAmountTypes'),
-                        self._parse_xero_date(invoice.get('InvoiceDate')),
+                        self._parse_xero_date(invoice.get('Date')),  # Fixed: Date not InvoiceDate
                         self._parse_xero_date(invoice.get('DueDate')),
                         self._parse_xero_date(invoice.get('ExpectedPaymentDate')),
                         invoice.get('Reference'),
@@ -599,10 +599,13 @@ class XeroSync:
             
             journal_insert = """
                 INSERT INTO xero.journals
-                (journal_id, journal_number, reference, notes, journal_date, status, updated_at, synced_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                (journal_id, journal_number, reference, notes, journal_date, status, 
+                 source_id, source_type, updated_at, synced_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (journal_id) DO UPDATE SET
                     status = EXCLUDED.status,
+                    source_id = EXCLUDED.source_id,
+                    source_type = EXCLUDED.source_type,
                     synced_at = NOW()
             """
             
@@ -674,6 +677,8 @@ class XeroSync:
                             None,  # Journals don't have Notes field
                             self._parse_xero_date(journal.get('JournalDate')),
                             None,  # Journals don't have Status field
+                            journal.get('SourceID'),  # Source transaction ID (e.g., InvoiceID)
+                            journal.get('SourceType'),  # Source type (e.g., ACCINVOICE)
                             self._parse_xero_date(journal.get('CreatedDateUTC'))
                         ]
                         
@@ -784,6 +789,8 @@ class XeroSync:
                         None,
                         self._parse_xero_date(journal.get('JournalDate')),
                         None,
+                        journal.get('SourceID'),  # Source transaction ID (e.g., InvoiceID)
+                        journal.get('SourceType'),  # Source type (e.g., ACCINVOICE)
                         self._parse_xero_date(journal.get('CreatedDateUTC'))
                     ]
                     
