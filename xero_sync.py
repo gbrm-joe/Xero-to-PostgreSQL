@@ -586,8 +586,8 @@ class XeroSync:
             else:
                 logger.info("Starting fresh journal sync from the beginning")
             
-            # Mark sync as running
-            self._update_sync_progress(sync_type, page=0, status='running')
+            # Mark sync as running (journals don't use page tracking anymore)
+            self._update_sync_progress(sync_type, status='running')
             
             total_synced = 0
             current_offset = last_journal_number
@@ -723,7 +723,7 @@ class XeroSync:
                     # COMMIT BATCH
                     logger.info(f"About to commit batch: {journal_count} journals, {line_count} lines...")
                     
-                    # Check DB state before commit
+                    # Check DB state before commit (get actual total for verification)
                     cursor.execute("SELECT COUNT(*) FROM xero.journals")
                     count_before = cursor.fetchone()[0]
                     logger.info(f"Journals in DB before commit: {count_before}")
@@ -746,11 +746,13 @@ class XeroSync:
                     cursor.close()
                     
                     if count_after != count_before + journal_count:
-                        logger.error(f"COMMIT VERIFICATION FAILED! Expected {count_before + journal_count}, got {count_after}")
+                        logger.warning(f"COMMIT VERIFICATION WARNING: Expected {count_before + journal_count}, got {count_after}")
+                    else:
+                        logger.info(f"✓ Commit verified: {journal_count} new journals added")
                     
                     total_synced += journal_count
                     
-                    logger.info(f"✓ Batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
+                    logger.info(f"✓ Batch committed: {journal_count} journals, {line_count} lines (session total: {total_synced})")
                     
                     # Clear batch for next iteration
                     batch_records = []
@@ -829,8 +831,7 @@ class XeroSync:
                 
                 logger.info(f"✓ Final batch committed: {journal_count} journals, {line_count} lines (total: {total_synced})")
                 
-                # Update progress
-                logger.info(f"Processing final batch of {journal_count} journals")
+                logger.info(f"✓ Final batch committed: {journal_count} journals, {line_count} lines (session total: {total_synced})")
             
             # Mark sync as completed
             sync_timestamp = datetime.now()
