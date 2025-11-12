@@ -567,30 +567,76 @@ class XeroSync:
             self._log_sync(sync_type, 0, 'failed', str(e), start_time)
             raise
     
-    def sync_journals(self):
-        """Sync journals and journal lines from Xero using offset-based pagination"""
+    def sync_journals(self, force_full_resync=False):
+        """Sync journals and journal lines from Xero using offset-based pagination
+        
+        Args:
+            force_full_resync: If True, forces a complete resync of all journals (catches updates)
+        """
         logger.info("Starting journal sync...")
         start_time = datetime.now()
         sync_type = 'journals'
         
         try:
-            # Get the highest journal number in our database
             cursor = self.db_conn.cursor()
-            cursor.execute("SELECT MAX(journal_number) FROM xero.journals")
-            result = cursor.fetchone()
-            last_journal_number = result[0] if result[0] else 0
-            cursor.close()
             
-            if last_journal_number > 0:
-                logger.info(f"Resuming from journal number {last_journal_number}")
+            # Check if we need a full resync
+            is_full_sync = False
+            current_offset = 0
+            
+            if force_full_resync:
+                logger.info("FORCED FULL RESYNC: Will resync all journals to catch updates")
+                is_full_sync = True
+                current_offset = 0
             else:
-                logger.info("Starting fresh journal sync from the beginning")
+                # Check last full sync date
+                cursor.execute("""
+                    SELECT last_full_sync, last_incremental_sync
+                    FROM xero.sync_metadata
+                    WHERE entity_type = 'journals'
+                """)
+                result = cursor.fetchone()
+                
+                if result:
+                    last_full_sync = result[0]
+                    if last_full_sync:
+                        days_since_full = (datetime.now() - last_full_sync).days
+                        if days_since_full >= 7:
+                            logger.info(f"Last full sync was {days_since_full} days ago - performing FULL RESYNC")
+                            is_full_sync = True
+                            current_offset = 0
+                        else:
+                            logger.info(f"Last full sync was {days_since_full} days ago - performing incremental sync")
+                    else:
+                        logger.info("No previous full sync recorded - performing FULL RESYNC")
+                        is_full_sync = True
+                        current_offset = 0
+                else:
+                    logger.info("No sync metadata found - performing FULL RESYNC")
+                    is_full_sync = True
+                    current_offset = 0
+            
+            # If incremental sync, get the highest journal number
+            if not is_full_sync:
+                cursor.execute("SELECT MAX(journal_number) FROM xero.journals")
+                result = cursor.fetchone()
+                last_journal_number = result[0] if result[0] else 0
+                current_offset = last_journal_number
+                
+                if last_journal_number > 0:
+                    logger.info(f"Incremental sync: Starting from journal number {last_journal_number}")
+                else:
+                    logger.info("No journals in database - starting fresh sync")
+                    is_full_sync = True
+                    current_offset = 0
+            
+            cursor.close()
             
             # Mark sync as running (journals don't use page tracking anymore)
             self._update_sync_progress(sync_type, status='running')
             
             total_synced = 0
-            current_offset = last_journal_number
+            # current_offset is already set from the full/incremental sync logic above
             batch_records = []
             consecutive_empty_responses = 0
             max_empty_responses = 3  # Stop after 3 consecutive empty responses
@@ -844,12 +890,37 @@ class XeroSync:
             sync_timestamp = datetime.now()
             self._update_sync_progress(sync_type, completed=True, modified_after=sync_timestamp)
             
-            # Log final journal count
+            # Update sync metadata for periodic resync tracking
             cursor = self.db_conn.cursor()
+            
+            # Log final journal count first
             cursor.execute("SELECT COUNT(*), MAX(journal_number) FROM xero.journals")
             total_count, max_number = cursor.fetchone()
-            cursor.close()
             logger.info(f"Journal sync complete. Total in DB: {total_count}, Max journal number: {max_number}")
+            
+            # Update metadata based on sync type
+            if is_full_sync:
+                cursor.execute("""
+                    INSERT INTO xero.sync_metadata (entity_type, last_full_sync, last_incremental_sync, updated_at)
+                    VALUES ('journals', NOW(), NOW(), NOW())
+                    ON CONFLICT (entity_type) DO UPDATE SET
+                        last_full_sync = NOW(),
+                        last_incremental_sync = NOW(),
+                        updated_at = NOW()
+                """)
+                logger.info("Updated sync metadata: Full sync completed")
+            else:
+                cursor.execute("""
+                    INSERT INTO xero.sync_metadata (entity_type, last_incremental_sync, updated_at)
+                    VALUES ('journals', NOW(), NOW())
+                    ON CONFLICT (entity_type) DO UPDATE SET
+                        last_incremental_sync = NOW(),
+                        updated_at = NOW()
+                """)
+                logger.info("Updated sync metadata: Incremental sync completed")
+            
+            self.db_conn.commit()
+            cursor.close()
             
             logger.info(f"Successfully synced {total_synced} journals")
             self._log_sync(sync_type, total_synced, 'success', None, start_time)
@@ -1006,8 +1077,12 @@ class XeroSync:
         except Exception as e:
             logger.warning(f"Failed to log sync operation: {str(e)}")
     
-    def run_full_sync(self):
-        """Run full sync of all data"""
+    def run_full_sync(self, force_journal_resync=False):
+        """Run full sync of all data
+        
+        Args:
+            force_journal_resync: If True, forces a complete resync of all journals (catches updates)
+        """
         try:
             self.connect_db()
             
@@ -1017,7 +1092,7 @@ class XeroSync:
             total_records += self.sync_accounts()
             total_records += self.sync_contacts()
             total_records += self.sync_invoices()
-            total_records += self.sync_journals()
+            total_records += self.sync_journals(force_full_resync=force_journal_resync)
             
             logger.info(f"Full sync completed. Total records synced: {total_records}")
             print(f"SUCCESS: Synced {total_records} total records")
