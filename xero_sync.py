@@ -1180,9 +1180,24 @@ class XeroSync:
 
 
 def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Sync Xero data to PostgreSQL')
+    parser.add_argument('--force-full-resync', action='store_true',
+                        help='Force a complete resync of all journals (useful after schema changes to backfill tracking data)')
+    parser.add_argument('--force-full-invoice-resync', action='store_true',
+                        help='Force a complete resync of all invoices')
+    args = parser.parse_args()
+    
     try:
         syncer = XeroSync()
-        success = syncer.run_full_sync()
+        
+        # If force full invoice resync, set the flag
+        if args.force_full_invoice_resync:
+            syncer.force_full_sync = True
+            logger.info("FORCE FULL INVOICE RESYNC: Will resync all invoices")
+        
+        success = syncer.run_full_sync(force_journal_resync=args.force_full_resync)
         sys.exit(0 if success else 1)
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")

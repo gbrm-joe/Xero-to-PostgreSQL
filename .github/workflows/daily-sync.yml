@@ -4,7 +4,18 @@ on:
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      force_full_resync:
+        description: 'Force full resync of all journals (backfills tracking data)'
+        required: false
+        type: boolean
+        default: false
+      force_full_invoice_resync:
+        description: 'Force full resync of all invoices (backfills tracking data)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   sync:
@@ -44,7 +55,16 @@ jobs:
         DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       run: |
         source venv/bin/activate
-        python3 xero_sync.py
+        ARGS=""
+        if [ "${{ github.event.inputs.force_full_resync }}" == "true" ]; then
+          ARGS="$ARGS --force-full-resync"
+          echo "📊 Force full journal resync enabled"
+        fi
+        if [ "${{ github.event.inputs.force_full_invoice_resync }}" == "true" ]; then
+          ARGS="$ARGS --force-full-invoice-resync"
+          echo "📊 Force full invoice resync enabled"
+        fi
+        python3 xero_sync.py $ARGS
     
     - name: Sync complete
       if: success()
