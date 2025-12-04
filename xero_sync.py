@@ -206,6 +206,86 @@ class XeroSync:
             self.db_conn.close()
             logger.info("Database connection closed")
     
+    def sync_tracking_categories(self):
+        """Sync tracking categories and options from Xero"""
+        logger.info("Starting tracking categories sync...")
+        start_time = datetime.now()
+        
+        try:
+            # Fetch tracking categories from Xero
+            logger.info("Fetching tracking categories...")
+            response = self._make_xero_request('TrackingCategories')
+            categories = response.get('TrackingCategories', [])
+            
+            if not categories:
+                logger.info("No tracking categories to sync")
+                return 0
+            
+            logger.info(f"Retrieved {len(categories)} tracking categories")
+            
+            cursor = self.db_conn.cursor()
+            
+            # Insert/update tracking categories
+            category_insert = """
+                INSERT INTO xero.tracking_categories 
+                (tracking_category_id, name, status, synced_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (tracking_category_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    status = EXCLUDED.status,
+                    synced_at = NOW()
+            """
+            
+            # Insert/update tracking options
+            option_insert = """
+                INSERT INTO xero.tracking_options 
+                (tracking_option_id, tracking_category_id, name, status, is_deleted, is_archived, synced_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (tracking_option_id) DO UPDATE SET
+                    tracking_category_id = EXCLUDED.tracking_category_id,
+                    name = EXCLUDED.name,
+                    status = EXCLUDED.status,
+                    is_deleted = EXCLUDED.is_deleted,
+                    is_archived = EXCLUDED.is_archived,
+                    synced_at = NOW()
+            """
+            
+            total_options = 0
+            for category in categories:
+                category_id = category.get('TrackingCategoryID')
+                
+                # Insert category
+                cursor.execute(category_insert, (
+                    category_id,
+                    category.get('Name'),
+                    category.get('Status')
+                ))
+                
+                # Insert options for this category
+                for option in category.get('Options', []):
+                    cursor.execute(option_insert, (
+                        option.get('TrackingOptionID'),
+                        category_id,
+                        option.get('Name'),
+                        option.get('Status'),
+                        option.get('IsDeleted', False),
+                        option.get('IsArchived', False)
+                    ))
+                    total_options += 1
+            
+            self.db_conn.commit()
+            
+            logger.info(f"Successfully synced {len(categories)} tracking categories with {total_options} options")
+            self._log_sync('tracking_categories', len(categories), 'success', None, start_time)
+            
+            return len(categories)
+        
+        except Exception as e:
+            self.db_conn.rollback()
+            logger.error(f"Failed to sync tracking categories: {str(e)}")
+            self._log_sync('tracking_categories', 0, 'failed', str(e), start_time)
+            raise
+    
     def sync_accounts(self):
         """Sync accounts from Xero"""
         logger.info("Starting account sync...")
@@ -699,13 +779,18 @@ class XeroSync:
             line_insert = """
                 INSERT INTO xero.journal_lines
                 (journal_line_id, journal_id, account_id, account_code, description, net_amount,
-                 tax_amount, tracking1_name, tracking1_option, tracking2_name, tracking2_option, synced_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                 tax_amount, tracking1_name, tracking1_option, tracking1_category_id, tracking1_option_id,
+                 tracking2_name, tracking2_option, tracking2_category_id, tracking2_option_id, synced_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (journal_line_id) DO UPDATE SET
                     tracking1_name = EXCLUDED.tracking1_name,
                     tracking1_option = EXCLUDED.tracking1_option,
+                    tracking1_category_id = EXCLUDED.tracking1_category_id,
+                    tracking1_option_id = EXCLUDED.tracking1_option_id,
                     tracking2_name = EXCLUDED.tracking2_name,
                     tracking2_option = EXCLUDED.tracking2_option,
+                    tracking2_category_id = EXCLUDED.tracking2_category_id,
+                    tracking2_option_id = EXCLUDED.tracking2_option_id,
                     synced_at = NOW()
             """
             
@@ -790,16 +875,22 @@ class XeroSync:
                         for line in journal.get('JournalLines', []):
                             line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
                             
-                            # Extract tracking categories (up to 2)
+                            # Extract tracking categories (up to 2) - Xero uses 'TrackingCategories' key
                             tracking1_name = None
                             tracking1_option = None
+                            tracking1_category_id = None
+                            tracking1_option_id = None
                             tracking2_name = None
                             tracking2_option = None
+                            tracking2_category_id = None
+                            tracking2_option_id = None
                             
-                            tracking_list = line.get('Tracking', [])
+                            tracking_list = line.get('TrackingCategories', [])
                             if tracking_list and len(tracking_list) > 0:
                                 tracking1_name = tracking_list[0].get('Name')
                                 tracking1_option = tracking_list[0].get('Option')
+                                tracking1_category_id = tracking_list[0].get('TrackingCategoryID')
+                                tracking1_option_id = tracking_list[0].get('TrackingOptionID')
                                 tracking_found_count += 1
                                 # Log first few tracking entries found for diagnostic purposes
                                 if tracking_found_count <= 5:
@@ -807,6 +898,8 @@ class XeroSync:
                             if tracking_list and len(tracking_list) > 1:
                                 tracking2_name = tracking_list[1].get('Name')
                                 tracking2_option = tracking_list[1].get('Option')
+                                tracking2_category_id = tracking_list[1].get('TrackingCategoryID')
+                                tracking2_option_id = tracking_list[1].get('TrackingOptionID')
                             
                             line_data = [
                                 line_id,
@@ -818,8 +911,12 @@ class XeroSync:
                                 float(line.get('TaxAmount', 0)),
                                 tracking1_name,
                                 tracking1_option,
+                                tracking1_category_id,
+                                tracking1_option_id,
                                 tracking2_name,
-                                tracking2_option
+                                tracking2_option,
+                                tracking2_category_id,
+                                tracking2_option_id
                             ]
                             
                             cursor.execute(line_insert, line_data)
@@ -914,16 +1011,22 @@ class XeroSync:
                     for line in journal.get('JournalLines', []):
                         line_id = f"{journal.get('JournalID')}_{line.get('JournalLineID')}"
                         
-                        # Extract tracking categories (up to 2)
+                        # Extract tracking categories (up to 2) - Xero uses 'TrackingCategories' key
                         tracking1_name = None
                         tracking1_option = None
+                        tracking1_category_id = None
+                        tracking1_option_id = None
                         tracking2_name = None
                         tracking2_option = None
+                        tracking2_category_id = None
+                        tracking2_option_id = None
                         
-                        tracking_list = line.get('Tracking', [])
+                        tracking_list = line.get('TrackingCategories', [])
                         if tracking_list and len(tracking_list) > 0:
                             tracking1_name = tracking_list[0].get('Name')
                             tracking1_option = tracking_list[0].get('Option')
+                            tracking1_category_id = tracking_list[0].get('TrackingCategoryID')
+                            tracking1_option_id = tracking_list[0].get('TrackingOptionID')
                             tracking_found_count += 1
                             # Log first few tracking entries found for diagnostic purposes
                             if tracking_found_count <= 5:
@@ -931,6 +1034,8 @@ class XeroSync:
                         if tracking_list and len(tracking_list) > 1:
                             tracking2_name = tracking_list[1].get('Name')
                             tracking2_option = tracking_list[1].get('Option')
+                            tracking2_category_id = tracking_list[1].get('TrackingCategoryID')
+                            tracking2_option_id = tracking_list[1].get('TrackingOptionID')
                         
                         line_data = [
                             line_id,
@@ -942,8 +1047,12 @@ class XeroSync:
                             float(line.get('TaxAmount', 0)),
                             tracking1_name,
                             tracking1_option,
+                            tracking1_category_id,
+                            tracking1_option_id,
                             tracking2_name,
-                            tracking2_option
+                            tracking2_option,
+                            tracking2_category_id,
+                            tracking2_option_id
                         ]
                         
                         cursor.execute(line_insert, line_data)
@@ -1160,6 +1269,8 @@ class XeroSync:
             logger.info("Starting full Xero sync...")
             total_records = 0
             
+            # Sync tracking categories first (needed for foreign key references)
+            total_records += self.sync_tracking_categories()
             total_records += self.sync_accounts()
             total_records += self.sync_contacts()
             total_records += self.sync_invoices()

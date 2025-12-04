@@ -4,6 +4,27 @@
 
 CREATE SCHEMA IF NOT EXISTS xero;
 
+-- Tracking Categories (synced from Xero TrackingCategories endpoint)
+CREATE TABLE IF NOT EXISTS xero.tracking_categories (
+    tracking_category_id VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    status VARCHAR(20),
+    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tracking Options (nested under categories)
+CREATE TABLE IF NOT EXISTS xero.tracking_options (
+    tracking_option_id VARCHAR(36) PRIMARY KEY,
+    tracking_category_id VARCHAR(36) REFERENCES xero.tracking_categories(tracking_category_id),
+    name VARCHAR(255) NOT NULL,
+    status VARCHAR(20),
+    is_deleted BOOLEAN DEFAULT FALSE,
+    is_archived BOOLEAN DEFAULT FALSE,
+    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tracking_options_category ON xero.tracking_options(tracking_category_id);
+
 CREATE TABLE IF NOT EXISTS xero.accounts (
     id SERIAL PRIMARY KEY,
     account_id VARCHAR(36) UNIQUE NOT NULL,
@@ -70,15 +91,21 @@ CREATE TABLE IF NOT EXISTS xero.invoice_items (
     line_amount DECIMAL(15, 2),
     account_code VARCHAR(10),
     account_id VARCHAR(36),
+    -- Tracking category/option names (denormalized for quick access)
     tracking1_name TEXT,
     tracking1_option TEXT,
     tracking2_name TEXT,
     tracking2_option TEXT,
+    -- Tracking category/option IDs (normalized references)
+    tracking1_category_id VARCHAR(36),
+    tracking1_option_id VARCHAR(36),
+    tracking2_category_id VARCHAR(36),
+    tracking2_option_id VARCHAR(36),
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_invoice_items_tracking1 ON xero.invoice_items(tracking1_name, tracking1_option);
-CREATE INDEX IF NOT EXISTS idx_invoice_items_tracking2 ON xero.invoice_items(tracking2_name, tracking2_option);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_tracking1 ON xero.invoice_items(tracking1_category_id, tracking1_option_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_tracking2 ON xero.invoice_items(tracking2_category_id, tracking2_option_id);
 
 CREATE TABLE IF NOT EXISTS xero.journals (
     id SERIAL PRIMARY KEY,
@@ -88,6 +115,8 @@ CREATE TABLE IF NOT EXISTS xero.journals (
     notes TEXT,
     journal_date DATE,
     status VARCHAR(20),
+    source_id VARCHAR(36),
+    source_type VARCHAR(50),
     updated_at TIMESTAMP,
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -104,15 +133,21 @@ CREATE TABLE IF NOT EXISTS xero.journal_lines (
     description TEXT,
     net_amount DECIMAL(15, 2),
     tax_amount DECIMAL(15, 2),
+    -- Tracking category/option names (denormalized for quick access)
     tracking1_name TEXT,
     tracking1_option TEXT,
     tracking2_name TEXT,
     tracking2_option TEXT,
+    -- Tracking category/option IDs (normalized references)
+    tracking1_category_id VARCHAR(36),
+    tracking1_option_id VARCHAR(36),
+    tracking2_category_id VARCHAR(36),
+    tracking2_option_id VARCHAR(36),
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_journal_lines_tracking1 ON xero.journal_lines(tracking1_name, tracking1_option);
-CREATE INDEX IF NOT EXISTS idx_journal_lines_tracking2 ON xero.journal_lines(tracking2_name, tracking2_option);
+CREATE INDEX IF NOT EXISTS idx_journal_lines_tracking1 ON xero.journal_lines(tracking1_category_id, tracking1_option_id);
+CREATE INDEX IF NOT EXISTS idx_journal_lines_tracking2 ON xero.journal_lines(tracking2_category_id, tracking2_option_id);
 
 CREATE TABLE IF NOT EXISTS xero.sync_log (
     id SERIAL PRIMARY KEY,
