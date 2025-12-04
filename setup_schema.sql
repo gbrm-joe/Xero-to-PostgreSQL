@@ -70,8 +70,15 @@ CREATE TABLE IF NOT EXISTS xero.invoice_items (
     line_amount DECIMAL(15, 2),
     account_code VARCHAR(10),
     account_id VARCHAR(36),
+    tracking1_name TEXT,
+    tracking1_option TEXT,
+    tracking2_name TEXT,
+    tracking2_option TEXT,
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_invoice_items_tracking1 ON xero.invoice_items(tracking1_name, tracking1_option);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_tracking2 ON xero.invoice_items(tracking2_name, tracking2_option);
 
 CREATE TABLE IF NOT EXISTS xero.journals (
     id SERIAL PRIMARY KEY,
@@ -94,13 +101,18 @@ CREATE TABLE IF NOT EXISTS xero.journal_lines (
     journal_id VARCHAR(36) NOT NULL,
     account_id VARCHAR(36),
     account_code VARCHAR(10),
-    description VARCHAR(255),
+    description TEXT,
     net_amount DECIMAL(15, 2),
     tax_amount DECIMAL(15, 2),
-    tracking_name VARCHAR(100),
-    tracking_option VARCHAR(100),
+    tracking1_name TEXT,
+    tracking1_option TEXT,
+    tracking2_name TEXT,
+    tracking2_option TEXT,
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_journal_lines_tracking1 ON xero.journal_lines(tracking1_name, tracking1_option);
+CREATE INDEX IF NOT EXISTS idx_journal_lines_tracking2 ON xero.journal_lines(tracking2_name, tracking2_option);
 
 CREATE TABLE IF NOT EXISTS xero.sync_log (
     id SERIAL PRIMARY KEY,
