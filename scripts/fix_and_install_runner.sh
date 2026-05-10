@@ -121,19 +121,19 @@ echo "Configuring runner..."
 echo "Runner configured successfully"
 EOF
 
-# Install and start service (needs sudo)
+# Install and start service (svc.sh install/start/status need root)
 cd /home/runner/actions-runner
 
 echo ""
-echo "Installing runner as system service..."
-sudo -u runner ./svc.sh install
+echo "Installing runner as system service (running as 'runner')..."
+./svc.sh install runner
 
 echo "Starting runner service..."
-sudo -u runner ./svc.sh start
+./svc.sh start
 
 echo ""
 echo "Checking runner status..."
-sudo -u runner ./svc.sh status
+./svc.sh status
 
 echo ""
 echo "=================================="
@@ -146,11 +146,11 @@ echo "2. You should see 'xero-sync-runner' with green 'Idle' status"
 echo ""
 echo "The runner is now installed as user 'runner' (not root)"
 echo ""
-echo "Runner management commands (run as root or runner user):"
-echo "  Status:  cd /home/runner/actions-runner && sudo -u runner ./svc.sh status"
-echo "  Stop:    cd /home/runner/actions-runner && sudo -u runner ./svc.sh stop"
-echo "  Start:   cd /home/runner/actions-runner && sudo -u runner ./svc.sh start"
-echo "  Restart: cd /home/runner/actions-runner && sudo -u runner ./svc.sh restart"
+echo "Runner management commands (run as root):"
+echo "  Status:  cd /home/runner/actions-runner && sudo ./svc.sh status"
+echo "  Stop:    cd /home/runner/actions-runner && sudo ./svc.sh stop"
+echo "  Start:   cd /home/runner/actions-runner && sudo ./svc.sh start"
+echo "  Restart: cd /home/runner/actions-runner && sudo ./svc.sh restart"
 echo ""
 echo "Recommended: Reboot the system now"
 echo "  sudo reboot"
