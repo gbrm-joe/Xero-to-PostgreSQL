@@ -405,6 +405,62 @@ class XeroSync:
             self._log_sync('accounts', 0, 'failed', str(e), start_time)
             raise
 
+    def sync_tax_rates(self):
+        logger.info(f'[{self.slug}] Starting tax_rates sync...')
+        start_time = _utcnow()
+        try:
+            response = self._make_xero_request('TaxRates')
+            tax_rates = response.get('TaxRates', [])
+            if not tax_rates:
+                logger.info(f'[{self.slug}] No tax rates to sync')
+                self._log_sync('tax_rates', 0, 'success', None, start_time)
+                return 0
+
+            cursor = self.db_conn.cursor()
+            insert_query = f"""
+                INSERT INTO {self.schema}.xero_tax_rates
+                (tax_type, name, display_tax_rate, effective_rate, status,
+                 can_apply_to_assets, can_apply_to_equity, can_apply_to_expenses,
+                 can_apply_to_liabilities, can_apply_to_revenue, unit_id, synced_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (tax_type) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    display_tax_rate = EXCLUDED.display_tax_rate,
+                    effective_rate = EXCLUDED.effective_rate,
+                    status = EXCLUDED.status,
+                    can_apply_to_assets = EXCLUDED.can_apply_to_assets,
+                    can_apply_to_equity = EXCLUDED.can_apply_to_equity,
+                    can_apply_to_expenses = EXCLUDED.can_apply_to_expenses,
+                    can_apply_to_liabilities = EXCLUDED.can_apply_to_liabilities,
+                    can_apply_to_revenue = EXCLUDED.can_apply_to_revenue,
+                    unit_id = EXCLUDED.unit_id,
+                    synced_at = NOW()
+            """
+            data = [(
+                t.get('TaxType'),
+                t.get('Name'),
+                float(t.get('DisplayTaxRate') or 0),
+                float(t.get('EffectiveRate') or 0),
+                t.get('Status'),
+                t.get('CanApplyToAssets', False),
+                t.get('CanApplyToEquity', False),
+                t.get('CanApplyToExpenses', False),
+                t.get('CanApplyToLiabilities', False),
+                t.get('CanApplyToRevenue', False),
+                self.unit_id,
+            ) for t in tax_rates]
+            execute_batch(cursor, insert_query, data, page_size=100)
+            self.db_conn.commit()
+
+            logger.info(f'[{self.slug}] Synced {len(tax_rates)} tax rates')
+            self._log_sync('tax_rates', len(tax_rates), 'success', None, start_time)
+            return len(tax_rates)
+        except Exception as e:
+            self.db_conn.rollback()
+            logger.error(f'[{self.slug}] tax_rates sync failed: {e}')
+            self._log_sync('tax_rates', 0, 'failed', str(e), start_time)
+            raise
+
     def sync_contacts(self):
         logger.info(f'[{self.slug}] Starting contacts sync...')
         start_time = _utcnow()
@@ -656,6 +712,124 @@ class XeroSync:
             self.db_conn.rollback()
             self._update_sync_progress(sync_type, status='failed')
             logger.error(f'[{self.slug}] invoices sync failed: {e}')
+            self._log_sync(sync_type, 0, 'failed', str(e), start_time)
+            raise
+
+    def sync_payments(self):
+        """Sync payments with batch commits and incremental support.
+
+        Payments have no line items. Incremental syncs filter on
+        UpdatedDateUTC via the per-tenant 'payments' watermark in
+        sync_progress, mirroring sync_invoices.
+        """
+        logger.info(f'[{self.slug}] Starting payments sync...')
+        start_time = _utcnow()
+        sync_type = 'payments'
+        try:
+            progress = self._get_sync_progress(sync_type)
+            use_incremental = (
+                progress['last_modified'] is not None
+                and progress['status'] == 'completed'
+            )
+            if use_incremental:
+                dt = progress['last_modified']
+                modified_after = (
+                    f'{dt.year},{dt.month:02d},{dt.day:02d},'
+                    f'{dt.hour:02d},{dt.minute:02d},{dt.second:02d}'
+                )
+                logger.info(
+                    f'[{self.slug}] Incremental payment sync (changes since '
+                    f'{dt:%Y-%m-%d %H:%M:%S})'
+                )
+
+            self._update_sync_progress(sync_type, status='running')
+
+            payment_insert = f"""
+                INSERT INTO {self.schema}.xero_payments
+                (payment_id, invoice_id, account_id, payment_date, amount,
+                 currency_rate, payment_type, status, reference, is_reconciled,
+                 updated_at, unit_id, synced_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (payment_id) DO UPDATE SET
+                    invoice_id = EXCLUDED.invoice_id,
+                    account_id = EXCLUDED.account_id,
+                    payment_date = EXCLUDED.payment_date,
+                    amount = EXCLUDED.amount,
+                    currency_rate = EXCLUDED.currency_rate,
+                    payment_type = EXCLUDED.payment_type,
+                    status = EXCLUDED.status,
+                    reference = EXCLUDED.reference,
+                    is_reconciled = EXCLUDED.is_reconciled,
+                    updated_at = EXCLUDED.updated_at,
+                    unit_id = EXCLUDED.unit_id,
+                    synced_at = NOW()
+            """
+
+            cursor = self.db_conn.cursor()
+            total_synced = 0
+            page = 1
+            max_pages = 2000
+            batch_records = []
+
+            def flush_batch(records):
+                nonlocal total_synced
+                if not records:
+                    return
+                for payment in records:
+                    cursor.execute(payment_insert, (
+                        payment.get('PaymentID'),
+                        (payment.get('Invoice') or {}).get('InvoiceID'),
+                        (payment.get('Account') or {}).get('AccountID'),
+                        self._parse_xero_date(payment.get('Date')),
+                        float(payment.get('Amount') or 0),
+                        float(payment.get('CurrencyRate') or 0),
+                        payment.get('PaymentType'),
+                        payment.get('Status'),
+                        payment.get('Reference'),
+                        payment.get('IsReconciled', False),
+                        self._parse_xero_date(payment.get('UpdatedDateUTC')),
+                        self.unit_id,
+                    ))
+                self.db_conn.commit()
+                total_synced += len(records)
+                logger.info(
+                    f'[{self.slug}] Batch committed: {len(records)} payments '
+                    f'(total: {total_synced})'
+                )
+
+            while page <= max_pages:
+                logger.info(f'[{self.slug}] Fetching payments page {page}...')
+                params = {'page': page, 'pageSize': 100}
+                if use_incremental:
+                    params['where'] = f'UpdatedDateUTC>=DateTime({modified_after})'
+                response = self._make_xero_request('Payments', params=params)
+                payments = response.get('Payments', [])
+                if not payments:
+                    break
+                logger.info(f'[{self.slug}] Retrieved {len(payments)} payments')
+                batch_records.extend(payments)
+
+                if len(batch_records) >= (self.batch_size * 100):
+                    flush_batch(batch_records)
+                    batch_records = []
+
+                page += 1
+                time.sleep(1)
+
+            # Final partial batch
+            if batch_records:
+                flush_batch(batch_records)
+
+            self._update_sync_progress(
+                sync_type, completed=True, modified_after=_utcnow()
+            )
+            logger.info(f'[{self.slug}] Synced {total_synced} payments')
+            self._log_sync(sync_type, total_synced, 'success', None, start_time)
+            return total_synced
+        except Exception as e:
+            self.db_conn.rollback()
+            self._update_sync_progress(sync_type, status='failed')
+            logger.error(f'[{self.slug}] payments sync failed: {e}')
             self._log_sync(sync_type, 0, 'failed', str(e), start_time)
             raise
 
@@ -1009,8 +1183,10 @@ class XeroSync:
         entities = [
             ('tracking_categories', self.sync_tracking_categories),
             ('accounts', self.sync_accounts),
+            ('tax_rates', self.sync_tax_rates),
             ('contacts', self.sync_contacts),
             ('invoices', self.sync_invoices),
+            ('payments', self.sync_payments),
             ('journals', lambda: self.sync_journals(
                 force_full_resync=force_full_journal_resync
             )),
