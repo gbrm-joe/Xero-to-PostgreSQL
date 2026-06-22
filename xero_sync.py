@@ -873,8 +873,15 @@ class XeroSync:
     def sync_journals(self, force_full_resync=False):
         """Sync journals and journal lines using offset-based pagination.
 
-        Journals API does not support reliable change detection, so we
-        perform a weekly full resync. See JOURNAL_UPDATE_TRACKING.md.
+        The Journals API has no reliable change detection (offset only
+        scans forward; Xero warns If-Modified-Since can miss journals).
+        Journal numbers are sequential and the ledger is append-only, so
+        each run pulls new journals forward from MAX(journal_number) and
+        then backfills any missing number ranges below the max. That is
+        far cheaper than the previous periodic full resync and is
+        self-healing for gaps left by a failed run. force_full_resync
+        re-pulls everything from offset 0 (manual override).
+        See JOURNAL_UPDATE_TRACKING.md.
         """
         logger.info(f'[{self.slug}] Starting journals sync...')
         start_time = _utcnow()
@@ -888,27 +895,9 @@ class XeroSync:
                 logger.info(f'[{self.slug}] FORCED FULL JOURNAL RESYNC')
                 is_full_sync = True
             else:
-                cursor.execute(f"""
-                    SELECT last_full_sync FROM {self.schema}.sync_metadata
-                    WHERE entity_type = 'journals'
-                """)
-                row = cursor.fetchone()
-                if row and row[0]:
-                    days_since_full = (_utcnow() - row[0]).days
-                    if days_since_full >= 7:
-                        logger.info(
-                            f'[{self.slug}] Last full journal sync was '
-                            f'{days_since_full} days ago — full resync'
-                        )
-                        is_full_sync = True
-                    else:
-                        logger.info(
-                            f'[{self.slug}] Last full journal sync was '
-                            f'{days_since_full} days ago — incremental'
-                        )
-                else:
-                    logger.info(f'[{self.slug}] No prior full journal sync — full resync')
-                    is_full_sync = True
+                logger.info(
+                    f'[{self.slug}] Incremental journal sync (forward + gap backfill)'
+                )
 
             if not is_full_sync:
                 cursor.execute(
@@ -1040,6 +1029,59 @@ class XeroSync:
 
             if batch_records:
                 flush_batch(batch_records)
+
+            # Backfill any gaps below the current max journal number. The
+            # forward pass above only catches journals newer than the max
+            # we already had; a missing range (from a failed run or the
+            # documented If-Modified-Since miss) would otherwise never be
+            # refetched. Journal numbers are sequential, so we detect the
+            # gaps and re-pull only those ranges.
+            if not is_full_sync:
+                gap_cursor = self.db_conn.cursor()
+                gap_cursor.execute(f"""
+                    SELECT journal_number + 1 AS gap_start, next_num - 1 AS gap_end
+                    FROM (
+                        SELECT journal_number,
+                               LEAD(journal_number) OVER (ORDER BY journal_number) AS next_num
+                        FROM {self.schema}.xero_journals
+                    ) t
+                    WHERE next_num IS NOT NULL AND next_num > journal_number + 1
+                    ORDER BY gap_start
+                """)
+                gaps = gap_cursor.fetchall()
+                gap_cursor.close()
+                if not gaps:
+                    logger.info(f'[{self.slug}] No journal gaps to backfill')
+                else:
+                    total_missing = sum(end - start + 1 for start, end in gaps)
+                    logger.info(
+                        f'[{self.slug}] Backfilling {len(gaps)} journal gap(s), '
+                        f'{total_missing} missing number(s)'
+                    )
+                    for gap_start, gap_end in gaps:
+                        backfill_offset = gap_start - 1
+                        while backfill_offset < gap_end:
+                            logger.info(
+                                f'[{self.slug}] Backfilling journals '
+                                f'{gap_start}-{gap_end} from offset={backfill_offset}...'
+                            )
+                            response = self._make_xero_request(
+                                'Journals', params={'offset': backfill_offset}
+                            )
+                            journals = response.get('Journals', [])
+                            if not journals:
+                                break
+                            in_gap = [
+                                j for j in journals
+                                if j.get('JournalNumber') is not None
+                                and j.get('JournalNumber') <= gap_end
+                            ]
+                            flush_batch(in_gap)
+                            last_num = journals[-1].get('JournalNumber')
+                            if not last_num or last_num <= backfill_offset:
+                                break
+                            backfill_offset = last_num
+                            time.sleep(1)
 
             # Update sync_metadata
             cursor = self.db_conn.cursor()
